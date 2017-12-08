@@ -2,7 +2,7 @@
 title: Making The Invalid Impossible - Choosing The Right Data Model
 published: true
 description: How to manage state complexity by making invalid state impossible.
-tags: scala, domain model, complexity
+tags: scala, programming, devtips
 cover_image: https://thepracticaldev.s3.amazonaws.com/i/2rzsd1x2dwyfmu5zd8eh.png
 ---
 
