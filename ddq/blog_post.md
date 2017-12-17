@@ -1,6 +1,6 @@
 ---
 title: Monitoring Data Quality in Data Science Applications
-published: false
+published: true
 description: Working with data is not easy. In this blog post we are going to take a closer look at challenges related to data quality. How does data quality impact your results? How can you measure it? The answer is a Spark package called Drunken Data Quality.
 tags: showdev, data science, scala, spark
 cover_image: https://thepracticaldev.s3.amazonaws.com/i/rukwmn5pkytd2wqz8eiz.jpg
