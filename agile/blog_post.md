@@ -1,9 +1,9 @@
 ---
 title: Explain Agile Like I'm a Sports Student
-published: false
-description:
-tags: agile, explainlikeimfive
-cover_image: ???
+published: true
+description: When trying to define agility, many people associate it with speed. We are going to look at the definition of agility from the sports science perspective and adapt this definition.
+tags: agile, explainlikeimfive, productivity
+cover_image: https://thepracticaldev.s3.amazonaws.com/i/9bbrbjp1nfekztj5sofw.png
 ---
 
 ## Agility In The Wild
