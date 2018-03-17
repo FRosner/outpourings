@@ -1,3 +1,11 @@
+---
+title: Zooming in on your data: Optics
+published: true
+description:
+tags: scala, functional programming, optics, til
+cover_image: ???
+---
+
 ## Iso
 
 Given two isomorphic types `A` and `B`. An iso is an optic used to look at one of the two types as if it was from the other type. As `A` and `B` are isomorphic, using the view preserves all information.
