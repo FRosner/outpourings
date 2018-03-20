@@ -74,12 +74,56 @@ ScalaMeter provides a highly configurable testing framework with default configu
 - Configurable reporting (text, HTML, logging, charts, DSV, ...)
 - Configurable persistence (Java or JSON serialization)
 
+In the next section we are going to look at some experiments where I used ScalaMeter to perform the measurements.
+
 # Example Experiments
 
 ## Chained Map Operations
 
+### Motivation
+
+When working with collections in Scala, the `map` operation is quite common. `xs.map(f)` applies the function `f` to every element `x` in `xs` and returns the result. If you have two composable functions `f` and `g` and you want to apply both, you express that either as
+
+- `xs.map(g compose f)`, or
+- `xs.map(f).map(g)`
+
+In terms of the result, both operations are equivalent. The memory footprint and runtime however might differ, depending on the implementation of `xs` and `map`. If you are using a strictly evaluated collection, on every `map` call the result will be computed. If the collection is immutable, a new collection will be created with the resulting values.
+
+In this experiment we want to look at the relative runtime performance of both expressions comparing a `List` (strict) and a `SeqView` (lazy).
+
+### Report
+
+`Bench.OfflineReport`
+
+### Variables
+
+```scala
+val strictList = List.iterate(0, 1000000)(_ + 1)
+val lazyList = strict.view
+val f: Int => Int = _ + 1
+val fs = List.fill(10)(f)
+val fsAndThen = fs.reduce(_ andThen _)
+```
+
+### Experiments
+
+Given both the `strictList` and the `lazyList` as `l`, we perform the following two experiments for both of them. Note that we omit the `force` command here, which is needed to actually trigger the computation of the view.
+
+- `l.map(fsAndThen)`, which applies `f` 10 times in a single `map` operation
+- `fs.foldLeft(l)((l, f) => l.map(f))`, which applies `f` one time in each of the 10 `map` operations
+
+### Results
+
 ![runtime comparison](https://thepracticaldev.s3.amazonaws.com/i/ynsjgkpj3tr9ct7bvy41.png)
 ![legend](https://thepracticaldev.s3.amazonaws.com/i/xoyhrcu7267n0jkph5zh.png)
+
+Looking at these results I find three notable observations:
+
+1. On the strict list, the chained map operations took more than three times longer on average than using the single map operation.
+2. This effect is not present when using the list view.
+3. The performance of the chained map on the list view is comparable to the strict list single map results.
+
+Given these results, we can draw the following conclusions. Using chained map operations on strictly evaluated, immutable collections can have a significant performance impact. If performance matters, you should aim to combine your map operations. If you cannot combine the map operations yourself (maybe you are just providing a library, like [Apache Spark](https://spark.apache.org/)), using a lazy evaluated collection can help reducing the run time significantly.
 
 ## Sorting Data Structures
 
