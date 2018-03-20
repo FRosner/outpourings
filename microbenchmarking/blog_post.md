@@ -78,6 +78,14 @@ In the next section we are going to look at some experiments where I used ScalaM
 
 # Example Experiments
 
+In this section we are going to look at three experiments:
+
+1. How do chained map operations perform compared to a single combined map operation?
+2. How do different collections perform when being sorted? How does the Scala sort implementation perform compared to the native Java one?
+3. When building up a collection, how does the performance differ when using a builder vs. concatenating?
+
+All experiments are performed using ScalaMeter 0.9 and Scala 2.12.4. My computer has a 2016 3,3 GHz Intel Core i7 with 16 GB of RAM. I am using the `Bench.OfflineReport`, which executes the code in a separate JVM and applies an appropriate number of warm-up runs.
+
 ## Chained Map Operations
 
 ### Motivation
@@ -90,10 +98,6 @@ When working with collections in Scala, the `map` operation is quite common. `xs
 In terms of the result, both operations are equivalent. The memory footprint and runtime however might differ, depending on the implementation of `xs` and `map`. If you are using a strictly evaluated collection, on every `map` call the result will be computed. If the collection is immutable, a new collection will be created with the resulting values.
 
 In this experiment we want to look at the relative runtime performance of both expressions comparing a `List` (strict) and a `SeqView` (lazy).
-
-### Report
-
-`Bench.OfflineReport`
 
 ### Variables
 
@@ -127,7 +131,98 @@ Given these results, we can draw the following conclusions. Using chained map op
 
 ## Sorting Data Structures
 
+### Motivation
+
+Sorting a collection is required in many applications. May it be showing a list of events ordered by their time of occurrence, or preparing a table for being joined with another one using a merge-join algorithm. 20 years ago, developers had to be able to write efficient sorting algorithms themselves, as standard libraries were not as rich and computers not as fast.
+
+Nowadays you will find fast-enough implementations of sorting algorithms in almost any standard library. If you are not dealing with strict performance requirements, this is also fine, as using available standard functions can make the code less buggy and more readable.
+
+Scala offers a method to sort immutable collections called `sorted`, which is available for all standard sequence-like collections. In this experiment we want to compare the relative performance of `sorted` on different Scala data structures, and also compare it to the performance of the `java.util.Arrays.sort` method.
+
+### Variables
+
+```scala
+val size = Gen.enumeration("size")(List.iterate(1, 7)(_ * 10): _*)
+val list = for { s <- size } yield List.fill(s)(Random.nextInt)
+val array = for { l <- list } yield l.toArray
+val vector = for { l <- list } yield l.toVector
+```
+
+### Experiments
+
+Given the `list`, `array`, and `vector` as `l`, filled with random integers, we sort them using the Scala `sorted` method. For the array, we also apply the Java `sort`, which works in place. In order to make the results comparable to Scala, which gives you a new collection back instead of modifying the existing one, we also copy the array first in another experiment.
+
+- `l.sorted`
+- `util.Arrays.sort(l)`
+- `val newArray = new Array[Int](l.length)`  
+  `Array.copy(l, 0, newArray, 0, l.length)`  
+  `util.Arrays.sort(newArray)`
+
+### Results
+
+![lines](https://thepracticaldev.s3.amazonaws.com/i/d6hc7yoyz49yhqcbbfzy.png)
+![legend](https://thepracticaldev.s3.amazonaws.com/i/p9268kmqmc6qk200p71w.png)
+
+Looking at the performance for different collection sizes there are no surprises (log scale would've been better I know...). When looking at the difference between the Scala and Java array sort, I was kind of surprised.
+
+![bars](https://thepracticaldev.s3.amazonaws.com/i/zfpgs701lml7ighacldi.png)
+![legend](https://thepracticaldev.s3.amazonaws.com/i/p9268kmqmc6qk200p71w.png)
+
+The Scala sorts are *so much slower*. Looking at implementation of `sorted` we can spot two details which might explain the difference in runtime.
+
+```scala
+def sorted[B >: A](implicit ord: Ordering[B]): Repr = {
+   val len = this.length
+   val b = newBuilder
+   if (len == 1) b ++= this
+   else if (len > 1) {
+     b.sizeHint(len)
+     val arr = new Array[AnyRef](len)
+     var i = 0
+     for (x <- this) {
+       arr(i) = x.asInstanceOf[AnyRef]
+       i += 1
+     }
+     java.util.Arrays.sort(arr, ord.asInstanceOf[Ordering[Object]])
+     i = 0
+     while (i < arr.length) {
+       b += arr(i).asInstanceOf[A]
+       i += 1
+     }
+   }
+   b.result()
+ }
+```
+
+You can see that it also uses `Arrays.sort` internally. But why is it so much slower? I think the reason for that is that it does not only copy the data to a new array but also has to copy it back to a collection of the original type. When sorting an immutable list you expect to get another immutable list back. This is done using a respective builder `b` (e.g. a `ListBuilder`):
+
+```scala
+while (i < arr.length) {
+  b += arr(i).asInstanceOf[A]
+  i += 1
+}
+```
+
+But also the creation of the initial array could be a reason for it being slower. For making the copy, I was using `Arrays.copy`, which uses the native method `java.lang.System.arraycopy` under the hood. In the Scala method, the array is created in a loop:
+
+```scala
+for (x <- this) {
+  arr(i) = x.asInstanceOf[AnyRef]
+  i += 1
+}
+```
+
+Looking at those results, I think it is obvious that when it comes to sorting, you should always check the performance of your implementation if it matters to you. Using a sort algorithm that immediately outputs a new immutable collection instead of relying on an intermediate array would be the better choice. Nevertheless most of the time the benefits you gain from using standard methods outweigh the performance gain of custom solutions.
+
 ## Concatenation vs. Builder
+
+### Motivation
+
+### Variables
+
+### Experiments
+
+### Results
 
 # References
 
