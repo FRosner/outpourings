@@ -1,6 +1,6 @@
 ---
 title: Hit Me Baby One More Time - What Are Cache Hits and Why Should You Care?
-published: false
+published: true
 description: When reasoning about algorithm performance we often look at complexity. Computer architecture however, might matter just as much and can influence the runtime of your implementation in orders of magnitude.
 tags: cpu, performance, scala
 cover_image: https://upload.wikimedia.org/wikipedia/commons/a/a7/IBM_PPC604e_200.jpg
