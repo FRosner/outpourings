@@ -12,6 +12,14 @@ In one of my previous posts I was talking about [choosing the right data model](
 
 Data systems researchers developed a theoretical model to reason about, and compare different data structures in terms of their overhead when *reading* (R), *updating* (U), and storing the data in *memory* (M). They formulated the results in the so called *RUM conjecture* [1]. In this blog post we are going to look at the RUM overheads and the trade-offs associated with them. We are also taking a look at the conjecture and its implications for us as developers.
 
+This blog post is the first part of a series about data structures focusing on the access overheads:
+
+1. [RUM Conjecture - Reasoning About Data Access](#)
+2. Read Optimized Data Structures (TBD)
+3. Write Optimized Data Structures (TBD)
+4. Space Optimized Data Structures (TBD)
+5. Adaptive Data Structure (TBD)
+
 The post is structured as follows. The first section formally defines RUM overheads. The next section introduces the RUM conjecture, which explains how the three overheads are connected and influencing each other. We are going to look at some example implementations as well. Afterwards there will be a discussion about the implications of the RUM conjecture for us as developers. We are closing the blog post with an outlook for future posts.
 
 # RUM Overheads
