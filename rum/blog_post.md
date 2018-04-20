@@ -15,9 +15,9 @@ Data systems researchers developed a theoretical model to reason about, and comp
 This blog post is the first part of a series about data structures focusing on the access overheads:
 
 1. [RUM Conjecture - Reasoning About Data Access](#)
-2. Read Optimized Data Structures (TBD)
-3. Write Optimized Data Structures (TBD)
-4. Space Optimized Data Structures (TBD)
+2. Read Efficient Data Structures (TBD)
+3. Write Efficient Data Structures (TBD)
+4. Space Efficient Data Structures (TBD)
 5. Adaptive Data Structure (TBD)
 
 The post is structured as follows. The first section formally defines RUM overheads. The next section introduces the RUM conjecture, which explains how the three overheads are connected and influencing each other. We are going to look at some example implementations as well. Afterwards there will be a discussion about the implications of the RUM conjecture for us as developers. We are closing the blog post with an outlook for future posts.
