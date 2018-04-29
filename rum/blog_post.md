@@ -15,7 +15,7 @@ Data systems researchers developed a theoretical model to reason about, and comp
 This blog post is the first part of a series about data structures focusing on the access overheads:
 
 1. [RUM Conjecture - Reasoning About Data Access](#)
-2. Read Efficient Data Structures (TBD)
+2. [Read Efficient Data Structures](https://dev.to/frosnerd/read-efficient-data-structures-57i5)
 3. Write Efficient Data Structures (TBD)
 4. Space Efficient Data Structures (TBD)
 5. Adaptive Data Structure (TBD)
