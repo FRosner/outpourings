@@ -38,7 +38,7 @@ The authors in [1] define the RUM overheads as follows:
 
 - Read Overhead *RO = (BR + AR) / RR*
 - Update Overhead *UO = (BU + AU) / BU*
-- Memory Overhead *MO = (BS + AS) / BS*
+- Memory Overhead *MO = (BM + AM) / BM*
 
 While this definition seems intuitive in my opinion there is one problem with it. When performing an update you might need to perform read operations first (e.g. to find the value to update), depending on the access pattern and data structure you are using. This is not captured by the update overhead described in the paper.
 
