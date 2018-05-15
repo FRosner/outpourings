@@ -92,7 +92,7 @@ This gives us the following RUM overheads for the MO-minimizing implementation:
 
 - *RO ≤ N*
 - *UO ≤ N + 2*
-- *MO = N*
+- *MO = 1*
 
 # Implications
 
