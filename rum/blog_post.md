@@ -18,7 +18,6 @@ This blog post is the first part of a series about data structures focusing on t
 2. [Read Efficient Data Structures](https://dev.to/frosnerd/read-efficient-data-structures-57i5)
 3. [Update Efficient Data Structures](https://dev.to/frosnerd/update-efficient-data-structures-7cn)
 4. Memory Efficient Data Structures (TBD)
-5. Adaptive Data Structure (TBD)
 
 The post is structured as follows. The first section formally defines RUM overheads. The next section introduces the RUM conjecture, which explains how the three overheads are connected and influencing each other. We are going to look at some example implementations as well. Afterwards there will be a discussion about the implications of the RUM conjecture for us as developers. We are closing the blog post with an outlook for future posts.
 

@@ -18,7 +18,6 @@ This blog post is the third part of the RUM series:
 2. [Read Efficient Data Structures](https://dev.to/frosnerd/read-efficient-data-structures-57i5)
 3. [Update Efficient Data Structures](#)
 4. Memory Efficient Data Structures (TBD)
-5. Adaptive Data Structure (TBD)
 
 In order to compare the different implementations we are using the same example as in the other posts. The task is to implement a set of integers, this time focusing on a small update overhead.
 
