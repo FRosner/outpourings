@@ -245,6 +245,7 @@ Amazing! But how do we know where to connect to? What is the name of the server?
 We can add `output` declarations to the definiton files, which will give us access to computed values right after a successful execution. The final `example.tf` looks like this:
 
 ```conf
+# example.tf
 provider "aws" {
   region = "eu-central-1"
 }
