@@ -15,7 +15,7 @@ In this post we want to take a closer look at data structures designed for low r
 1. [RUM Conjecture - Reasoning About Data Access](https://dev.to/frosnerd/rum-conjecture---reasoning-about-data-access-4781)
 2. [Read Efficient Data Structures](#)
 3. [Update Efficient Data Structures](https://dev.to/frosnerd/update-efficient-data-structures-7cn)
-4. Memory Efficient Data Structures (TBD)
+4. [Memory Efficient Data Structures](https://dev.to/frosnerd/memory-efficient-data-structures-2hki)
 
 In order to compare the different implementations we are using the same example as in the previous post. The task is to implement a set of integers, this time focusing on a small amount of read overhead.
 

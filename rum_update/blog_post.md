@@ -17,7 +17,7 @@ This blog post is the third part of the RUM series:
 1. [RUM Conjecture - Reasoning About Data Access](https://dev.to/frosnerd/rum-conjecture---reasoning-about-data-access-4781)
 2. [Read Efficient Data Structures](https://dev.to/frosnerd/read-efficient-data-structures-57i5)
 3. [Update Efficient Data Structures](#)
-4. Memory Efficient Data Structures (TBD)
+4. [Memory Efficient Data Structures](https://dev.to/frosnerd/memory-efficient-data-structures-2hki)
 
 In order to compare the different implementations we are using the same example as in the other posts. The task is to implement a set of integers, this time focusing on a small update overhead.
 
