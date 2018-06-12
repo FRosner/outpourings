@@ -8,109 +8,271 @@ cover_image:
 
 # Introduction
 
-- serverless
+With the rise of cloud platforms like [Amazon Web Services](https://aws.amazon.com) (AWS), [Google Cloud Platform](http://cloud.google.com/) (GCP), or [Microsoft Azure](https://azure.microsoft.com/en-en/services/app-service/), it has become increasingly popular to use managed infrastructure and services instead of hosting your own. In my [last blog post](https://dev.to/frosnerd/infrastructure-as-code---managing-aws-with-terraform-i9o) we looked at the concept of *Infrastructure as a Service* (IaaS).
+
+While managing virtual machines instead of bare metal hardware in your own datacenter already provides a lot of benefits, it still implies significant maintenance overhead. In order to run a simple web application, you have to take care about operating system updates, managing software packages, and so on.
+
+To this date a higher abstraction called *Platform as a Service* (PaaS) has gained momentum, as it allows you to deploy applications without caring about the machine it is being run on. There are multiple services who accomplish this by offering managed application containers, e.g. [AWS ECS](https://eu-central-1.console.aws.amazon.com/ecs/home?region=eu-central-1#/getStarted), [GCP Kubernetes Engine](https://cloud.google.com/kubernetes-engine/), [Microsoft Azure App Service](https://azure.microsoft.com/en-gb/services/app-service/), or [Heroku](https://www.heroku.com/).
+
+But why stop there? Why do you need to worry about the environment your code is being run on? What if you could simply define your function and deploy it to the cloud? This is where the next buzzword comes in: *Serverless*.
+
+> Serverless architectures are application designs that incorporate third-party “Backend as a Service” (BaaS) services, and/or that include custom code run in managed, ephemeral containers on a “Functions as a Service” (FaaS) platform. [sls]
+
+When working on AWS, serverless is often used as a synonym for AWS Lambda. In this blog post we want to take a look at how to deploy a simple "serverless" web application on AWS using Lambda, API Gateway, and S3. We are going to use Terraform to manage our resources.
+
+The post is structured as follows. [TODO]
 
 # Architecture
 
+## Overview
 
+The following figure illustrates the target architecture. The client sends an HTTP request to the API Gateway. The gateway will enrich and forward that request to a Lambda function. The function definition is stored on S3 and loaded dynamically. The result of the Lambda function will be processed by the API Gateway, which is returning a corresponding response to the client.
 
+![architecture](https://thepracticaldev.s3.amazonaws.com/i/0lexbp7wacyq34etri3h.png)
 
-# Different Lambda Runtimes
+In our concrete example we are going to develop the program logic in Scala. The assembled `jar` file will be published to S3 and used to process the requests. We will now briefly introduce the individual components on a conceptual level.
 
+## AWS Lambda
+
+[AWS Lambda](https://aws.amazon.com/lambda) is the FaaS offering from AWS. It runs your predefined functions in response to certain events and automatically manages the platform and resources.
+
+Lambda functions can be used to process requests coming through the API Gateway, or react to changes in your data, e.g. updates in DynamoDB, modifications in an S3 bucket, or data loaded into a Kinesis stream.
+
+Currently the following [runtimes](https://docs.aws.amazon.com/lambda/latest/dg/current-supported-versions.html) are supported:
+
+- Node.js
 - Java
-  - Java is slow due to classloading (up to 100 times compared to Node.js, e.g.)
-  - Put more memory to have more CPU as both are scaled based on memory (1024 mb)
+- Python
+- .NET
+- Go
 
+In our case we are going to use the Java runtime to execute our Scala service.
 
-# API Gateway Response
+## AWS API Gateway
 
-```JSON
-{
-  "body": "{\"test\":\"body\"}",
-  "resource": "/{proxy+}",
-  "requestContext": {
-    "resourceId": "123456",
-    "apiId": "1234567890",
-    "resourcePath": "/{proxy+}",
-    "httpMethod": "POST",
-    "requestId": "c6af9ac6-7b61-11e6-9a41-93e8deadbeef",
-    "accountId": "123456789012",
-    "identity": {
-      "apiKey": null,
-      "userArn": null,
-      "cognitoAuthenticationType": null,
-      "caller": null,
-      "userAgent": "Custom User Agent String",
-      "user": null,
-      "cognitoIdentityPoolId": null,
-      "cognitoIdentityId": null,
-      "cognitoAuthenticationProvider": null,
-      "sourceIp": "127.0.0.1",
-      "accountId": null
-    },
-    "stage": "prod"
-  },
-  "queryStringParameters": {
-    "foo": "bar"
-  },
-  "headers": {
-    "Via": "1.1 08f323deadbeefa7af34d5feb414ce27.cloudfront.net (CloudFront)",
-    "Accept-Language": "en-US,en;q=0.8",
-    "CloudFront-Is-Desktop-Viewer": "true",
-    "CloudFront-Is-SmartTV-Viewer": "false",
-    "CloudFront-Is-Mobile-Viewer": "false",
-    "X-Forwarded-For": "127.0.0.1, 127.0.0.2",
-    "CloudFront-Viewer-Country": "US",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Upgrade-Insecure-Requests": "1",
-    "X-Forwarded-Port": "443",
-    "Host": "1234567890.execute-api.us-east-1.amazonaws.com",
-    "X-Forwarded-Proto": "https",
-    "X-Amz-Cf-Id": "cDehVQoZnx43VYQb9j2-nvCh-9z396Uhbp027Y2JvkCPNLmGJHqlaA==",
-    "CloudFront-Is-Tablet-Viewer": "false",
-    "Cache-Control": "max-age=0",
-    "User-Agent": "Custom User Agent String",
-    "CloudFront-Forwarded-Proto": "https",
-    "Accept-Encoding": "gzip, deflate, sdch"
-  },
-  "pathParameters": {
-    "proxy": "path/to/resource"
-  },
-  "httpMethod": "POST",
-  "stageVariables": {
-    "baz": "qux"
-  },
-  "path": "/path/to/resource"
+[AWS API Gateway](https://aws.amazon.com/api-gateway) is an AWS service for managing APIs. It can act as a secure and scalable entry point for your applications, forwarding the requests to the appropriate back-end service. API Gateway can also manage authorization, access control, monitoring, and API version management.
+
+## AWS S3
+
+[AWS S3](https://aws.amazon.com/s3/) is an object storage provided by AWS. Objects themselves can be anything, e.g. an HTML file, a ZIP file, or a picture.
+
+Objects are organized in so called *buckets*, which act as global namespaces. Inside each bucket, your object will be addressed by a hierarchical key. The URL `s3.eu-central-1.amazonaws.com/usa-trip/images/feelsbadman.jpg` would be used to access the object `/images/feelsbadman.jpg` inside the `usa-trip` bucket, stored within the `eu-central-1` region.
+
+Enough architecture, let's look at the implementation.
+
+# Implementation
+
+## Development Tool Stack
+
+To develop the solution we are using the following tools:
+
+- Terraform v0.11.7
+- SBT 1.0.4
+- Scala 2.12.6
+- IntelliJ + Scala Plugin + Terraform Plugin
+
+The [source code](https://github.com/FRosner/lambda-vs-beanstalk) is available on GitHub. Note however that the project contains two modules, one for the AWS Lambda deployment and another one where I am experimenting with [AWS Elastic Beanstalk](https://aws.amazon.com/elasticbeanstalk/).
+
+## Vanilla Lambda Function
+
+A vanilla AWS Lambda function implemented in Scala is just a simple class or object method. As AWS Lambda only knows about Java and not Scala, we have to stick to Java types. Here is what a function returning a list of four names looks like:
+
+```scala
+package de.frosner.elbvsl.lambda
+
+import scala.collection.JavaConverters._
+
+object Main {
+  def getCustomers: java.util.List[String] =
+    List("Frank", "Lars", "Ross", "Paul").asJava
 }
 ```
 
-```JSON
+Next thing we need to do is to package that function and make it available for AWS Lambda. A convenient way to do that is to use the [sbt-assembly](https://github.com/sbt/sbt-assembly) plugin to build a fat `jar` and upload it to S3 using the [fm-sbt-s3-resolver](https://github.com/frugalmechanic/fm-sbt-s3-resolver).
+
+In order to make the `sbt publish` task do what we want, we add the following settings to our `build.sbt` file:
+
+```scala
+publishTo := Some("S3" at "s3://s3-eu-central-1.amazonaws.com/lambda-elb-test/lambda")
+artifact in (Compile, assembly) := {
+  val art = (artifact in (Compile, assembly)).value
+  art.withClassifier(Some("assembly"))
+}
+addArtifact(artifact in (Compile, assembly), assembly)
+```
+
+Don't forget to provide [valid credentials](https://github.com/frugalmechanic/fm-sbt-s3-resolver#s3-credentials). This is what we get when running `sbt publish`:
+
+```
+...
+[info] Packaging /Users/frosner/Documents/projects/lambda_vs_beanstalk/lambda/target/scala-2.12/elastic-beanstalk-vs-lambda-assembly-0.1-SNAPSHOT.jar ...
+[info] Done packaging.
+[info] S3URLHandler - Looking up AWS Credentials for bucket: lambda-elb-test ...
+[info] S3URLHandler - Using AWS Access Key Id: <obfuscated> for bucket: lambda-elb-test
+[info] S3URLHandler - Created S3 Client for bucket: lambda-elb-test and region: eu-central-1
+...
+[info] 	published elastic-beanstalk-vs-lambda_2.12 to s3://s3-eu-central-1.amazonaws.com/lambda-elb-test/lambda/de/frosner/elastic-beanstalk-vs-lambda_2.12/0.1-SNAPSHOT/elastic-beanstalk-vs-lambda_2.12-0.1-SNAPSHOT-assembly.jar
+```
+
+Now we can create the Lambda function using Terraform. If you are not familiar with how Terraform works, I recommend to take a look at my previous blog post: [Infrastructure as Code - Managing AWS With Terraform](https://dev.to/frosnerd/infrastructure-as-code---managing-aws-with-terraform-i9o).
+
+In order to create a new Lambda function, we need to provide the following information:
+
+- Location of the `jar` file, i.e. our S3 object
+- Runtime to execute the function, i.e. Java 8
+- Handler to start, i.e. our `getCustomers` function
+- [IAM role](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles.html) to use for execution
+
+In addition we can also provide memory requirements. Our app shouldn't need more than the default of 128 MB. However AWS Lambda assigns CPU resources proportional to the configured memory and with 128 MB the Lambda function times out as the class loading during JVM startup takes too much time 🤦.
+
+The IAM role we are using does not have any policies attached to it, as our function does not need to access any other AWS services. The following listing shows the Terraform file required to define the Lambda function.
+
+```conf
+variable "version" {
+  type = "string"
+  default = "0.1-SNAPSHOT"
+}
+
+resource "aws_lambda_function" "lambda-elb-test-lambda" {
+  function_name = "lambda-elb-test"
+
+  s3_bucket = "lambda-elb-test"
+  s3_key    = "lambda/de/frosner/elastic-beanstalk-vs-lambda_2.12/${var.version}/elastic-beanstalk-vs-lambda_2.12-${var.version}-assembly.jar"
+
+  handler = "de.frosner.elbvsl.lambda.Main::getCustomers"
+  runtime = "java8"
+
+  role = "${aws_iam_role.lambda_exec.arn}"
+
+  memory_size = 1024
+}
+
+resource "aws_iam_role" "lambda_exec" {
+  name = "lambda-elb-test_lambda"
+
+  assume_role_policy = <<EOF
 {
-  "isBase64Encoded": false,
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": "sts:AssumeRole",
+      "Principal": {
+        "Service": "lambda.amazonaws.com"
+      },
+      "Effect": "Allow",
+      "Sid": ""
+    }
+  ]
+}
+EOF
+}
+```
+
+We now have an AWS Lambda function defined that can be invoked by certain triggers. In our example we want to invoke it through the API Gateway. In order to do that however, we need to modify the Lambda function to make it return a response that is compatible with the [expected format](https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-create-api-as-simple-proxy-for-lambda.html#api-gateway-proxy-integration-create-lambda-backend) of the API Gateway.
+
+## API Gateway Lambda Function
+
+In the vanilla Scala function our inputs and outputs were simple Java objects. In order to be invoked by the API Gateway correctly, our handler has to return a JSON string instead. This is how it might look:
+
+```json
+{
   "statusCode": 200,
-  "headers": {},
-  "body": {
-    "input": $input,
-    "message": $output
+  "isBase64Encoded": false,
+  "headers": {
+    "my-header-key": "my-header-value"
+  },
+  "body": "my-response-body"
+}
+```
+
+In addition to that, the API Gateway will also wrap the original request inside a JSON, enriching it with metadata. This structure is much more complex than the response JSON. Covering request parsing is beyond the scope of this blog post so please refer to the AWS documentation.
+
+In order to generate the required JSON response, we are modifying our handler. Also we are no longer returning our customers but a way more generic answer, applicable to many other questions as well: `42`. We are using [circe](https://github.com/circe/circe) to generate the JSON string but feel free to use any other library.
+
+```scala
+import java.io.{InputStream, OutputStream, PrintStream}
+import io.circe.syntax._
+import io.circe.generic.auto._
+import com.amazonaws.services.lambda.runtime.{Context, RequestStreamHandler}
+import scala.io.Source
+
+case class Response(statusCode: Int,
+                    isBase64Encoded: Boolean,
+                    headers: Map[String, String],
+                    body: String)
+
+class Handler extends RequestStreamHandler {
+  override def handleRequest(input: InputStream,
+                             output: OutputStream,
+                             context: Context): Unit = {
+    val logger = context.getLogger
+    val inputJsonString = Source.fromInputStream(input).mkString
+    logger.log(inputJsonString)
+    val result = Response(
+      statusCode = 200,
+      isBase64Encoded = false,
+      headers = Map.empty,
+      body = "42"
+    ).asJson
+    val out = new PrintStream(output)
+    out.print(result)
+    out.close()
   }
 }
 ```
 
-```JSON
+The new handler  will now respond to any request with `42`:
+
+```json
 {
-  "message": "Hello me!",
-  "input": {}
+  "statusCode": 200,
+  "isBase64Encoded": false,
+  "headers": {},
+  "body": "42"
 }
 ```
-//    JSONObject responseBody = new JSONObject();
-//    responseBody.put("input", event.toJSONString());
-//    responseBody.put("message", greeting);
-//
-//    JSONObject headerJson = new JSONObject();
-//    headerJson.put("x-custom-header", "my custom header value");
-//
-//    responseJson.put("isBase64Encoded", false);
-//    responseJson.put("statusCode", responseCode);
-//    responseJson.put("headers", headerJson);
-//    responseJson.put("body", responseBody.toString());
+
+Our terraform file needs a slight modification, as we changed the class of the handler:
+
+```conf
+resource "aws_lambda_function" "lambda-elb-test-lambda" {
+  ...
+  handler = "de.frosner.elbvsl.lambda.Handler"
+  ...
+}
 ```
+
+The next subsection covers how to set up the API Gateway.
+
+## API Gateway Configuration
+
+[TODO] read about API gateway terminology, i.e. resource, deployment, method, etc.
+
+```conf
+resource "aws_api_gateway_rest_api" "lambda-elb-test-lambda" {
+  name        = "lambda-elb-test"
+  description = "Lambda vs Elastic Beanstalk Lambda Example"
+}
+
+resource "aws_api_gateway_resource" "lambda" {
+  rest_api_id = "${aws_api_gateway_rest_api.lambda-elb-test-lambda.id}"
+  parent_id   = "${aws_api_gateway_rest_api.lambda-elb-test-lambda.root_resource_id}"
+  path_part   = "question"
+}
+
+resource "aws_api_gateway_method" "lambda" {
+  rest_api_id   = "${aws_api_gateway_rest_api.lambda-elb-test-lambda.id}"
+  resource_id   = "${aws_api_gateway_resource.lambda.id}"
+  http_method   = "ANY"
+  authorization = "NONE"
+}
+```
+
+## Wiring Everything Together
+
+
+
+
+# References
+
+- [sls] [Serverless Architectures](https://martinfowler.com/articles/serverless.html) by [Mike Roberts](https://www.symphonia.io/bios/#mike-roberts)
