@@ -1,26 +1,31 @@
 ---
 title: Deploying an HTTP API on AWS using Lambda and API Gateway
-published: false
-description:
-tags:
-cover_image:
+published: true
+description: In this blog post we want to take a look at how to deploy a simple "serverless" web application on AWS using Lambda, API Gateway, and S3.
+tags: aws, devops, serverless, cloud
+cover_image: https://thepracticaldev.s3.amazonaws.com/i/cp9w21o1oisumbgtcqsw.png
 ---
+
+This blog post is part of my cloud series:
+
+- [Infrastructure as Code - Managing AWS With Terraform](https://dev.to/frosnerd/infrastructure-as-code---managing-aws-with-terraform-i9o)
+- [**Deploying an HTTP API on AWS using Lambda and API Gateway**](#)
 
 # Introduction
 
 With the rise of cloud platforms like [Amazon Web Services](https://aws.amazon.com) (AWS), [Google Cloud Platform](http://cloud.google.com/) (GCP), or [Microsoft Azure](https://azure.microsoft.com/en-en/services/app-service/), it has become increasingly popular to use managed infrastructure and services instead of hosting your own. In my [last blog post](https://dev.to/frosnerd/infrastructure-as-code---managing-aws-with-terraform-i9o) we looked at the concept of *Infrastructure as a Service* (IaaS).
 
-While managing virtual machines instead of bare metal hardware in your own datacenter already provides a lot of benefits, it still implies significant maintenance overhead. In order to run a simple web application, you have to take care about operating system updates, managing software packages, and so on.
+While managing virtual machines instead of bare metal hardware in your own datacenter already provides a lot of benefits, it still implies significant maintenance overhead. In order to run a simple web application you have to take care about operating system updates, managing software packages, and so on.
 
 To this date a higher abstraction called *Platform as a Service* (PaaS) has gained momentum, as it allows you to deploy applications without caring about the machine it is being run on. There are multiple services who accomplish this by offering managed application containers, e.g. [AWS ECS](https://eu-central-1.console.aws.amazon.com/ecs/home?region=eu-central-1#/getStarted), [GCP Kubernetes Engine](https://cloud.google.com/kubernetes-engine/), [Microsoft Azure App Service](https://azure.microsoft.com/en-gb/services/app-service/), or [Heroku](https://www.heroku.com/).
 
 But why stop there? Why do you need to worry about the environment your code is being run on? What if you could simply define your function and deploy it to the cloud? This is where the next buzzword comes in: *Serverless*.
 
-> Serverless architectures are application designs that incorporate third-party “Backend as a Service” (BaaS) services, and/or that include custom code run in managed, ephemeral containers on a “Functions as a Service” (FaaS) platform. [sls]
+> Serverless architectures are application designs that incorporate third-party “Backend as a Service” (BaaS) services, and/or that include custom code run in managed, ephemeral containers on a “Functions as a Service” (FaaS) platform. [1]
 
 When working on AWS, serverless is often used as a synonym for AWS Lambda. In this blog post we want to take a look at how to deploy a simple "serverless" web application on AWS using Lambda, API Gateway, and S3. We are going to use Terraform to manage our resources.
 
-The post is structured as follows. [TODO]
+The post is structured as follows. First we introduce the target architecture, explaining the different components on a conceptual level. The next section discusses the implementation of the different components and how they are wired together. We are closing the post by summarizing and discussing the main findings.
 
 # Architecture
 
@@ -51,6 +56,8 @@ In our case we are going to use the Java runtime to execute our Scala service.
 ## AWS API Gateway
 
 [AWS API Gateway](https://aws.amazon.com/api-gateway) is an AWS service for managing APIs. It can act as a secure and scalable entry point for your applications, forwarding the requests to the appropriate back-end service. API Gateway can also manage authorization, access control, monitoring, and API version management.
+
+The API interfaces with the backend by means of integration requests and integration responses. It does not act as a simple proxy but requires certain response parameters from the integrated back-ends.
 
 ## AWS S3
 
@@ -168,7 +175,7 @@ EOF
 }
 ```
 
-We now have an AWS Lambda function defined that can be invoked by certain triggers. In our example we want to invoke it through the API Gateway. In order to do that however, we need to modify the Lambda function to make it return a response that is compatible with the [expected format](https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-create-api-as-simple-proxy-for-lambda.html#api-gateway-proxy-integration-create-lambda-backend) of the API Gateway.
+We now have an AWS Lambda function defined that can be invoked by certain triggers. In our example we want to invoke it through the API Gateway. In order to do that however, we need to modify the Lambda function to make it return an integration response that is compatible with the [expected format](https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-create-api-as-simple-proxy-for-lambda.html#api-gateway-proxy-integration-create-lambda-backend) of the API Gateway.
 
 ## API Gateway Lambda Function
 
@@ -185,9 +192,9 @@ In the vanilla Scala function our inputs and outputs were simple Java objects. I
 }
 ```
 
-In addition to that, the API Gateway will also wrap the original request inside a JSON, enriching it with metadata. This structure is much more complex than the response JSON. Covering request parsing is beyond the scope of this blog post so please refer to the AWS documentation.
+In addition to that, the API Gateway will also wrap the original request inside an integration request JSON object, enriching it with metadata. This structure is much more complex than the response JSON. Covering request parsing is beyond the scope of this blog post so please refer to the AWS documentation.
 
-In order to generate the required JSON response, we are modifying our handler. Also we are no longer returning our customers but a way more generic answer, applicable to many other questions as well: `42`. We are using [circe](https://github.com/circe/circe) to generate the JSON string but feel free to use any other library.
+In order to generate the required JSON response we are need to modify our handler. Also we are no longer returning our customers but a way more generic answer, applicable to many other questions as well: `42`. We are using [circe](https://github.com/circe/circe) to generate the JSON string but feel free to use any other library.
 
 ```scala
 import java.io.{InputStream, OutputStream, PrintStream}
@@ -221,7 +228,7 @@ class Handler extends RequestStreamHandler {
 }
 ```
 
-The new handler  will now respond to any request with `42`:
+The new handler will now respond to any request with `42`:
 
 ```json
 {
@@ -232,7 +239,7 @@ The new handler  will now respond to any request with `42`:
 }
 ```
 
-Our terraform file needs a slight modification, as we changed the class of the handler:
+Our Terraform file needs a slight modification, as we changed the class of the handler:
 
 ```conf
 resource "aws_lambda_function" "lambda-elb-test-lambda" {
@@ -246,7 +253,11 @@ The next subsection covers how to set up the API Gateway.
 
 ## API Gateway Configuration
 
-[TODO] read about API gateway terminology, i.e. resource, deployment, method, etc.
+In the API Gateway each API includes a set of resources and methods implemented through the HTTP protocol. This corresponds to the concept of representational state transfer (REST) [2].
+
+In our case we will have just one resource called `question` and we will support `ANY` method for convenience reasons. In a well designed REST API, the semantics for posting a question should be properly defined and we would use `POST`, for example.
+
+The following Terraform file is defining a new API `lambda-elb-test-lambda` together with our `question` resource and method.
 
 ```conf
 resource "aws_api_gateway_rest_api" "lambda-elb-test-lambda" {
@@ -254,25 +265,111 @@ resource "aws_api_gateway_rest_api" "lambda-elb-test-lambda" {
   description = "Lambda vs Elastic Beanstalk Lambda Example"
 }
 
-resource "aws_api_gateway_resource" "lambda" {
+resource "aws_api_gateway_resource" "question" {
   rest_api_id = "${aws_api_gateway_rest_api.lambda-elb-test-lambda.id}"
   parent_id   = "${aws_api_gateway_rest_api.lambda-elb-test-lambda.root_resource_id}"
   path_part   = "question"
 }
 
-resource "aws_api_gateway_method" "lambda" {
+resource "aws_api_gateway_method" "question" {
   rest_api_id   = "${aws_api_gateway_rest_api.lambda-elb-test-lambda.id}"
-  resource_id   = "${aws_api_gateway_resource.lambda.id}"
+  resource_id   = "${aws_api_gateway_resource.question.id}"
   http_method   = "ANY"
   authorization = "NONE"
 }
 ```
 
+Now that we have defined the REST API, how do we connect it to our Lambda function? Let's find out.
+
 ## Wiring Everything Together
 
+To make the API Gateway work with our Lambda function, we have to create an *integration*. API Gateway supports different [integration types](https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-api-integration-types.html) and integration HTTP methods. For integrating with Lambda, we have to choose the `AWS_PROXY` integration type and the `POST` method for communication between the API Gateway and Lambda. Here's the Terraform resource definition:
 
+```conf
+resource "aws_api_gateway_integration" "lambda" {
+  rest_api_id = "${aws_api_gateway_rest_api.lambda-elb-test-lambda.id}"
+  resource_id = "${aws_api_gateway_method.question.resource_id}"
+  http_method = "${aws_api_gateway_method.question.http_method}"
 
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = "${aws_lambda_function.lambda-elb-test-lambda.invoke_arn}"
+}
+```
+
+In order to make the API accessible to clients, we have to deploy it. A *deployment* has to be associated with a *stage*. Stages empower us to do canary releases, but we are just going to stick with one stage called `test` for now. We add a terraform dependency to the integration to make sure that the integration is created before:
+
+```conf
+resource "aws_api_gateway_deployment" "lambda" {
+  depends_on = [
+    "aws_api_gateway_integration.lambda"
+  ]
+
+  rest_api_id = "${aws_api_gateway_rest_api.lambda-elb-test-lambda.id}"
+  stage_name  = "test"
+}
+```
+
+Finally we have to create a permission for our API Gateway deployment to invoke the Lambda function:
+
+```conf
+resource "aws_lambda_permission" "apigw" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = "${aws_lambda_function.lambda-elb-test-lambda.arn}"
+  principal     = "apigateway.amazonaws.com"
+
+  source_arn = "${aws_api_gateway_deployment.lambda.execution_arn}/*/*"
+}
+```
+
+We can now execute `terraform apply` to start up all the components. We are adding an output field that will give us the final API URL: `${aws_api_gateway_deployment.lambda.invoke_url}/${aws_api_gateway_resource.question.path_part}`. Please find the execution results below. I omitted some details to make it more readable.
+
+```
+aws_iam_role.lambda_exec: Creating...
+aws_api_gateway_rest_api.lambda-elb-test-lambda: Creating...
+aws_api_gateway_rest_api.lambda-elb-test-lambda: Creation complete after 1s (ID: 27xbmjqf24)
+aws_api_gateway_resource.question: Creating...
+aws_iam_role.lambda_exec: Creation complete after 1s (ID: lambda-elb-test_lambda)
+aws_api_gateway_account.lambda-elb-test: Creating...
+aws_lambda_function.lambda-elb-test-lambda: Creating...
+aws_api_gateway_resource.question: Creation complete after 0s (ID: tce971)
+aws_api_gateway_method.question: Creating...
+aws_api_gateway_method.question: Creation complete after 0s (ID: agm-27xbmjqf24-tce971-ANY)
+aws_api_gateway_account.lambda-elb-test: Still creating... (10s elapsed)
+aws_lambda_function.lambda-elb-test-lambda: Still creating... (10s elapsed)
+aws_lambda_function.lambda-elb-test-lambda: Creation complete after 14s (ID: lambda-elb-test)
+aws_api_gateway_integration.lambda: Creating...
+aws_api_gateway_integration.lambda: Creation complete after 0s (ID: agi-27xbmjqf24-tce971-ANY)
+aws_api_gateway_deployment.lambda: Creating...
+aws_api_gateway_deployment.lambda: Creation complete after 0s (ID: qpzovb)
+aws_lambda_permission.apigw: Creating...
+aws_lambda_permission.apigw: Creation complete after 1s (ID: AllowAPIGatewayInvoke)
+
+Apply complete!
+
+Outputs:
+
+url = https://27xbmjqf24.execute-api.eu-central-1.amazonaws.com/test/question
+```
+
+```
+$ curl https://27xbmjqf24.execute-api.eu-central-1.amazonaws.com/test/question
+42
+```
+
+# Conclusion
+
+We have seen that it is possible to develop RESTful services on AWS without having to deal with virtual machines, operating systems, or containers. AWS API Gateway and AWS Lambda are two important ingredients for "serverless" applications on AWS.
+
+The advantage of such architecture lies in the decoupling of individual functionalities, enabling small distributed teams using different programming languages to develop their services. Most of the maintenance work is offloaded to AWS and services communicate only through well-defined APIs.
+
+The disadvantage lies in the lack of flexibility and the potential to become too fine-granular, leading to a messy, complicated design. When you use AWS Lambda, you are stuck with the runtime environments they support. This is different in a PaaS approach, where you can containerize your runtime and have a higher confidence with regards to reproducibility.
+
+Have you used AWS Lambda in production? Did you run into problems, e.g. with regards to scalability or maintainability? What is your experience with similar concepts of other cloud providers? Let me know in the comments!
 
 # References
 
-- [sls] [Serverless Architectures](https://martinfowler.com/articles/serverless.html) by [Mike Roberts](https://www.symphonia.io/bios/#mike-roberts)
+- [1] [Serverless Architectures](https://martinfowler.com/articles/serverless.html) by [Mike Roberts](https://www.symphonia.io/bios/#mike-roberts)
+- [2] Fielding, Roy T., and Richard N. Taylor. Architectural styles and the design of network-based software architectures. Vol. 7. Doctoral dissertation: University of California, Irvine, 2000.
+- Cover image derived from an image created by Sam Johnston using OmniGroup's OmniGraffle and Inkscape (includes Computer.svg by Sasa Stefanovic), CC BY-SA 3.0, https://commons.wikimedia.org/w/index.php?curid=6080417

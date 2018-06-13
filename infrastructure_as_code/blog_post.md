@@ -6,6 +6,11 @@ tags: devops, cloud, aws, xaas
 cover_image: https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/TerraformedMoonFromEarth.jpg/1024px-TerraformedMoonFromEarth.jpg
 ---
 
+This blog post is part of my cloud series:
+
+- [**Infrastructure as Code - Managing AWS With Terraform**](#)
+- [Deploying an HTTP API on AWS using Lambda and API Gateway](https://dev.to/frosnerd/deploying-an-http-api-on-aws-using-lambda-and-api-gateway-g61)
+
 # Introduction
 
 Companies today often do not have to run their own data center anymore. Public and private cloud providers offer great products on different levels of abstraction. Whether you need access to hypervisors to create virtual machines or just want to run a Python snippet, anything is possible. These different levels of abstraction are usually referred to as XaaS. Starting from the highest abstraction the following categorization is commonly used:
