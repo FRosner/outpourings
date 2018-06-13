@@ -6,7 +6,7 @@ tags: aws, devops, serverless, cloud
 cover_image: https://thepracticaldev.s3.amazonaws.com/i/cp9w21o1oisumbgtcqsw.png
 ---
 
-This blog post is part of my cloud series:
+This blog post is part of my AWS series:
 
 - [Infrastructure as Code - Managing AWS With Terraform](https://dev.to/frosnerd/infrastructure-as-code---managing-aws-with-terraform-i9o)
 - [**Deploying an HTTP API on AWS using Lambda and API Gateway**](#)

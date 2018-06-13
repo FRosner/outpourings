@@ -6,7 +6,7 @@ tags: devops, cloud, aws, xaas
 cover_image: https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/TerraformedMoonFromEarth.jpg/1024px-TerraformedMoonFromEarth.jpg
 ---
 
-This blog post is part of my cloud series:
+This blog post is part of my AWS series:
 
 - [**Infrastructure as Code - Managing AWS With Terraform**](#)
 - [Deploying an HTTP API on AWS using Lambda and API Gateway](https://dev.to/frosnerd/deploying-an-http-api-on-aws-using-lambda-and-api-gateway-g61)
