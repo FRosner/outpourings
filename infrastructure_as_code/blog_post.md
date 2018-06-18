@@ -10,6 +10,7 @@ This blog post is part of my AWS series:
 
 - [**Infrastructure as Code - Managing AWS With Terraform**](#)
 - [Deploying an HTTP API on AWS using Lambda and API Gateway](https://dev.to/frosnerd/deploying-an-http-api-on-aws-using-lambda-and-api-gateway-g61)
+- [Deploying an HTTP API on AWS using Elastic Beanstalk](https://dev.to/frosnerd/deploying-an-http-api-on-aws-using-elastic-beanstalk-5dh7)
 
 # Introduction
 
