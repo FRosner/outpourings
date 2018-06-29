@@ -1,5 +1,6 @@
 ## Content
 
+- Event Handling in AWS using SNS, SQS, and Lambda ([Blog Post](AWS_sns_sqs/blog_post.md))
 - Deploying and Benchmarking an AWS RDS MySQL Instance ([Blog Post](AWS_rds/blog_post.md))
 - Deploying an HTTP API on AWS using Elastic Beanstalk ([Blog Post](AWS_elasticbeanstalk/blog_post.md))
 - Deploying an HTTP API on AWS using Lambda and API Gateway ([Blog Post](AWS_lambda_api_gateway/blog_post.md))
