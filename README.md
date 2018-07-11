@@ -1,5 +1,6 @@
 ## Content
 
+- Sensor Data Processing on AWS using IoT Core, Kinesis and ElastiCache ([Blog Post](AWS_iot/blog_post.md))
 - Continuous Delivery on AWS With Terraform and Travis CI ([Blog Post](AWS_travis_terraform/blog_post.md))
 - Event Handling in AWS using SNS, SQS, and Lambda ([Blog Post](AWS_sns_sqs/blog_post.md))
 - Deploying and Benchmarking an AWS RDS MySQL Instance ([Blog Post](AWS_rds/blog_post.md))

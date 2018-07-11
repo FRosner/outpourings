@@ -14,6 +14,7 @@ This blog post is part of my AWS series:
 - [Deploying and Benchmarking an AWS RDS MySQL Instance](https://dev.to/frosnerd/deploying-and-benchmarking-an-aws-rds-mysql-instance-2faf)
 - [**Event Handling in AWS using SNS, SQS, and Lambda**](#)
 - [Continuous Delivery on AWS With Terraform and Travis CI](https://dev.to/frosnerd/continuous-delivery-on-aws-with-terraform-and-travis-ci-3914)
+- [Sensor Data Processing on AWS using IoT Core, Kinesis and ElastiCache](https://dev.to/frosnerd/sensor-data-processing-on-aws-using-iot-core-kinesis-and-elasticache-26j1)
 
 # Introduction
 
