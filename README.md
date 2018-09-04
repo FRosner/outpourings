@@ -1,5 +1,6 @@
 ## Content
 
+- Concurrency and Automatic Conflict Resolution ([Blog Post](conflicts/blog_post.md))
 - Terraform Multi-Provider Deployment Including a Custom Provider ([Blog Post](https://blog.codecentric.de/en/2018/08/terraform-multi-provider-deployment-including-a-custom-provider/))
 - 1000 Followers - A Blogging Retrospective ([Blog Post](1000followers/blog_post.md))
 - Sensor Data Processing on AWS using IoT Core, Kinesis and ElastiCache ([Blog Post](AWS_iot/blog_post.md))
