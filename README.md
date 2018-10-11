@@ -1,5 +1,6 @@
 ## Content
 
+- Window Functions in Stream Analytics ([Blog Post](streaming_window/blog_post.md))
 - Yarnception: Starting Yarn Within Yarn Through Gulp and When It Is Useful ([Blog Post](yarngulpyarn/blog_post.md))
 - Concurrency and Automatic Conflict Resolution ([Blog Post](conflicts/blog_post.md))
 - Terraform Multi-Provider Deployment Including a Custom Provider ([Blog Post](https://blog.codecentric.de/en/2018/08/terraform-multi-provider-deployment-including-a-custom-provider/))
