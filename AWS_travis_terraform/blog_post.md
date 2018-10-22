@@ -15,6 +15,7 @@ This blog post is part of my AWS series:
 - [Event Handling in AWS using SNS, SQS, and Lambda](https://dev.to/frosnerd/event-handling-in-aws-using-sns-sqs-and-lambda-2ng)
 - [**Continuous Delivery on AWS With Terraform and Travis CI**](#)
 - [Sensor Data Processing on AWS using IoT Core, Kinesis and ElastiCache](https://dev.to/frosnerd/sensor-data-processing-on-aws-using-iot-core-kinesis-and-elasticache-26j1)
+- [Monitoring AWS Lambda Functions With CloudWatch](https://dev.to/frosnerd/monitoring-aws-lambda-functions-with-cloudwatch-1nap)
 
 # Introduction
 
