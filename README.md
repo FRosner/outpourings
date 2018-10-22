@@ -1,5 +1,6 @@
 ## Content
 
+- Monitoring AWS Lambda Functions with CloudWatch ([Blog Post](AWS_Lambda_Monitoring/blog_post.md))
 - Window Functions in Stream Analytics ([Blog Post](streaming_window/blog_post.md))
 - Yarnception: Starting Yarn Within Yarn Through Gulp and When It Is Useful ([Blog Post](yarngulpyarn/blog_post.md))
 - Concurrency and Automatic Conflict Resolution ([Blog Post](conflicts/blog_post.md))
