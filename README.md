@@ -12,7 +12,7 @@
 - Deploying and Benchmarking an AWS RDS MySQL Instance ([Blog Post](AWS_rds/blog_post.md))
 - Deploying an HTTP API on AWS using Elastic Beanstalk ([Blog Post](AWS_elasticbeanstalk/blog_post.md))
 - Deploying an HTTP API on AWS using Lambda and API Gateway ([Blog Post](AWS_lambda_api_gateway/blog_post.md))
-- Infrastructure as Code - Managing AWS With Terraform ([Blog Post](AWS_infrastructure_as_code/blog_post.md))
+- Infrastructure as Code - Managing AWS With Terraform ([Blog Post](AWS_infrastructure_as_code/blog_post.md), [Talk](AWS_infrastructure_as_code/hashicorpmeetup.pdf))
 - Handwritten Digit Recognition Using Convolutional Neural Networks ([Blog Post](handwritten/blog_post.md))
 - Memory Efficient Data Structures ([Blog Post](rum_memory/blog_post.md))
 - Update Efficient Data Structures ([Blog Post](rum_update/blog_post.md))
