@@ -1,5 +1,6 @@
 ## Content
 
+- Ten congitive biases to look out for as a developer ([Blog Post](cognitive_biases/blog_post.md))
 - Explain Non-Blocking I/O Like I'm Five ([Blog Post](nonblocking/blog_post.md))
 - Vert.x Kotlin Coroutines ([Blog Post](vertx-kotlin-coroutines/blog_post.md))
 - Quality Attributes in Software ([Blog Post](quality_attributes/blog_post.md))
