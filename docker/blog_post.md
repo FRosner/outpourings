@@ -1,10 +1,10 @@
 ---
 title: Docker Demystified
-published: false
+published: true
 description: Since its open source launch in 2013, Docker became one of the most popular pieces of technology out there. In this blog post we want to dive deeper into the internals of Docker to understand how it works.
 tags: linux, docker, beginners, devops
 cover_image: https://user-images.githubusercontent.com/3427394/58331541-a223c680-7e39-11e9-9d52-c1a061a39a55.png
-canonical_url:
+canonical_url: https://blog.codecentric.de/en/2019/05/docker-demystified/
 ---
 
 # Introduction
