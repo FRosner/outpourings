@@ -9,7 +9,7 @@ canonical_url: https://blog.codecentric.de/en/2019/05/docker-demystified/
 
 # Introduction
 
-Since its open source launch in 2013, Docker became one of the most popular pieces of technology out there. A lot of companies are contributing and a huge amount of people are using and adopting it. But why is it so popular? What does it offer that was not there before? In this blog post we want to dive deeper into the internals of Docker to understand how it works.
+Since its open source launch in 2013, Docker became one of the most popular pieces of technology out there. A lot of companies are contributing, and a huge amount of people are using and adopting it. But why is it so popular? What does it offer that was not there before? In this blog post we want to dive deeper into the internals of Docker to understand how it works.
 
 The first part of this post will give a quick overview about the basic architectural concepts. In the second part we will introduce four main functionalities that form the foundation for isolation in Docker containers: 1) cgroups, 2) namespaces, 3) stackable image-layers and copy-on-write, and 4) virtual network bridges. In the third section there will be a discussion about opportunities and challenges when using containers and Docker. We conclude by answering some frequently asked questions about Docker.
 
@@ -17,9 +17,9 @@ The first part of this post will give a quick overview about the basic architect
 
 > "Docker is an open-source project that automates the deployment of applications inside software containers." - *Wikipedia*
 
-People usually refer to containers when talking about operating-system-level virtualization. Operating-system-level virtualization is a method in which the kernel of an operating system allows the existence of multiple isolated application instances. There are many implementations of containers available, one of which is Docker.
+People usually refer to containers when talking about operating system level virtualization. Operating system level virtualization is a method in which the kernel of an operating system allows the existence of multiple isolated application instances. There are many implementations of containers available, one of which is Docker.
 
-Docker launches containers based off of *images*. An image is like a blue print, defining what should be inside the container when it is being created. The usual way to define an image is through a *Dockerfile*. A Dockerfile contains instructions on how to build your image step by step (don't worry you will understand more about what is going on internally later on). The following Dockerfile, for example, will start from an image containing OpenJDK, install Python 3 there, copy the `requirements.txt` inside the image and then install all Python packages from the requirements file.
+Docker launches containers based off of *images*. An image is like a blueprint, defining what should be inside the container when it is being created. The usual way to define an image is through a *Dockerfile*. A Dockerfile contains instructions on how to build your image step by step (don't worry you will understand more about what is going on internally later on). The following Dockerfile, for example, will start from an image containing OpenJDK, install Python 3 there, copy the `requirements.txt` inside the image and then install all Python packages from the requirements file.
 
 ```Docker
 FROM openjdk:8u212-jdk-slim
@@ -113,7 +113,7 @@ Docker persists images in *stackable layers*. A layer contains the changes to th
 
 In order not to store Ubuntu three times, layers are immutable and shared. Docker uses *copy-on-write* to only make a copy of a file if there are changes.
 
-When starting a container based on an image, the Docker daemon will provide you with all the layers contained in that image and put it in an isolated filesystem namespace for this container. The combination of stackable layers, copy-on-write, and filesystem namespaces enable you to run a container completely independent of the things "installed" on the Docker host without wasting a lot of space. This is one of the reasons why containers are more lightweight compared to virtual machines.
+When starting a container-based on an image, the Docker daemon will provide you with all the layers contained in that image and put it in an isolated filesystem namespace for this container. The combination of stackable layers, copy-on-write, and filesystem namespaces enable you to run a container completely independent of the things "installed" on the Docker host without wasting a lot of space. This is one of the reasons why containers are more lightweight compared to virtual machines.
 
 ## Virtual Network Bridge
 
@@ -141,7 +141,7 @@ In fact there is a [nice talk](https://www.youtube.com/watch?v=sK5i-N34im8) avai
 
 By now, many people are using Docker on a daily basis. What benefits do containers add? What does Docker offer that was not there before? In the end everything you need for containerizing your applications was already available in Linux for a long time, wasn't it?
 
-Let's look at some opportunities (not an exhaustive list of course) that you have when moving to a container based setup. Of course there are not only opportunities, but also challenges that might give you a hard time when adopting Docker. We are also going to name a few in this section.
+Let's look at some opportunities (not an exhaustive list of course) that you have when moving to a container-based setup. Of course there are not only opportunities, but also challenges that might give you a hard time when adopting Docker. We are also going to name a few in this section.
 
 ## Opportunities
 
@@ -167,11 +167,11 @@ Let's look at some opportunities (not an exhaustive list of course) that you hav
 
 ## Q: What's the difference between a container and a virtual machine?
 
-Without diving too much into details about the architecture of virtual machines (VMs), let us look at the main difference between the two on a conceptual level. Containers run inside an operating system, using kernel features to isolate applications. VMs on the other hand require a hypervisor which runs inside an operating system. The hypervisor then creates virtual hardware which can be accessed by another set of operating systems. The following illustration compares a virtual machine based application setup and a container based setup.
+Without diving too much into details about the architecture of virtual machines (VMs), let us look at the main difference between the two on a conceptual level. Containers run inside an operating system, using kernel features to isolate applications. VMs on the other hand require a hypervisor which runs inside an operating system. The hypervisor then creates virtual hardware which can be accessed by another set of operating systems. The following illustration compares a virtual machine based application setup and a container-based setup.
 
 ![vm vs container](https://thepracticaldev.s3.amazonaws.com/i/d5sazt7ln80e63qvhz1r.png)
 
-As you can see, the container based setup has less overhead as it does not require an additional operating system for each application. This is possible because the container manager (e.g. Docker) uses operating system functionality directly to isolate applications in a more lightweight fashion.
+As you can see, the container-based setup has less overhead as it does not require an additional operating system for each application. This is possible because the container manager (e.g. Docker) uses operating system functionality directly to isolate applications in a more lightweight fashion.
 
 Does that mean that containers are superior to virtual machines? It depends. Both technologies have their use cases and it sometimes even make sense to combine them, running a container manager inside a VM. There are many blog posts out there discussing the pros and cons of both solutions so we're not going to go into detail right now. It is important to understand the difference and to not see containers as some kind of "lightweight VM", because internally they are different.
 
