@@ -1,5 +1,6 @@
 ## Content
 
+- Resilience Design Patterns: Retry, Fallback, Timeout, Circuit Breaker ([Blog Post](resilience-patterns/blog_post.md))
 - Testing Your Database Migrations With Flyway and Testcontainers ([Blog Post](flyway_testcontainer/blog_post.md))
 - Docker Demystified ([Blog Post](docker/blog_post.md))
 - Ten congitive biases to look out for as a developer ([Blog Post](cognitive_biases/blog_post.md))
