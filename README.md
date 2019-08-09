@@ -1,5 +1,6 @@
 ## Content
 
+- Understanding the AWS Lambda SQS Integration ([Blog Post](aws_lambda_sqs/blog_post.md))
 - Let's Also Apply Run With Kotlin Scope Functions ([Blog Post](kotlin_laawr/blog_post.md))
 - Resilience Design Patterns: Retry, Fallback, Timeout, Circuit Breaker ([Blog Post](resilience-patterns/blog_post.md))
 - Testing Your Database Migrations With Flyway and Testcontainers ([Blog Post](flyway_testcontainer/blog_post.md))
