@@ -5,7 +5,7 @@ Description: Consumer-driven contract testing is an alternative to end-to-end te
 Tags: pact, tdd, javascript, kotlin
 cover_image: https://thepracticaldev.s3.amazonaws.com/i/5d5pp1on3c6yn4c3az0z.jpg
 canonical_url: https://blog.codecentric.de/en/2019/10/consumer-driven-contract-testing-with-pact/
-series: pact
+series: Pact
 ---
 
 # Introduction
