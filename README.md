@@ -1,6 +1,7 @@
 ## Content
 
 - Publishing Application Metrics to CloudWatch Using Micrometer ([Blog Post](micrometer-cloudwatch/blog_post.md))
+- Implementing a Consumer-Driven Contract Testing Workflow with Pact Broker and Gitlab CI ([Blog Post](pact-3/blog_post.md))
 - Message Pact - Contract Testing In Event-Driven Applications ([Blog Post](pact-2/blog_post.md))
 - Consumer-Driven Contract Testing with Pact ([Blog Post](pact-1/blog_post.md))
 - Understanding the AWS Lambda SQS Integration ([Blog Post](aws_lambda_sqs/blog_post.md))
