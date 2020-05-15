@@ -1,5 +1,6 @@
 ## Content
 
+- Implementing and Testing an Angular Feature Flag Directive ([Blog Post](angular_feature_flag_directive/blog_post.md))
 - Publishing Application Metrics to CloudWatch Using Micrometer ([Blog Post](micrometer-cloudwatch/blog_post.md))
 - Implementing a Consumer-Driven Contract Testing Workflow with Pact Broker and Gitlab CI ([Blog Post](pact-3/blog_post.md))
 - Message Pact - Contract Testing In Event-Driven Applications ([Blog Post](pact-2/blog_post.md))
