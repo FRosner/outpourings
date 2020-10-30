@@ -1,5 +1,6 @@
 ## Content
 
+- How to Get Your Next Software Engineering Job ([Blog Post](interview_prep/blog_post.md))
 - Implementing and Testing an Angular Feature Flag Directive ([Blog Post](angular_feature_flag_directive/blog_post.md))
 - Publishing Application Metrics to CloudWatch Using Micrometer ([Blog Post](micrometer-cloudwatch/blog_post.md))
 - Implementing a Consumer-Driven Contract Testing Workflow with Pact Broker and Gitlab CI ([Blog Post](pact-3/blog_post.md))
