@@ -1,5 +1,6 @@
 ## Content
 
+- Writing My Own Operating System: Writing My Own Boot Loader ([Blog Post](FrOS/blog_post_1.md))
 - How to Get Your Next Software Engineering Job ([Blog Post](interview_prep/blog_post.md))
 - Implementing and Testing an Angular Feature Flag Directive ([Blog Post](angular_feature_flag_directive/blog_post.md))
 - Publishing Application Metrics to CloudWatch Using Micrometer ([Blog Post](micrometer-cloudwatch/blog_post.md))
