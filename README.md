@@ -1,7 +1,6 @@
 ## Content
 
-- Writing My Own Operating System: Writing My Own VGA Driver ([Blog Post](FrOS/blog_post_2.md))
-- Writing My Own Operating System: Writing My Own Boot Loader ([Blog Post](FrOS/blog_post_1.md))
+- Writing My Own Operating System ([Blog Post 1: Writing My Own Boot Loader](FrOS/blog_post_1.md), [Blog Post 2: Writing My Own VGA Driver](FrOS/blog_post_2.md), [Blog Post 3: Writing My Own Keyboard Driver](FrOS/blog_post_3.md))
 - How to Get Your Next Software Engineering Job ([Blog Post](interview_prep/blog_post.md))
 - Implementing and Testing an Angular Feature Flag Directive ([Blog Post](angular_feature_flag_directive/blog_post.md))
 - Publishing Application Metrics to CloudWatch Using Micrometer ([Blog Post](micrometer-cloudwatch/blog_post.md))
