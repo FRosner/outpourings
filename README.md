@@ -1,5 +1,6 @@
 ## Content
 
+- Managing Cluster Membership with Etcd ([Blog Post](etcd-playground/blog_post.md))
 - Writing a Simple TCP Server Using Kqueue ([Blog Post](kqueue/blog_post.md))
 - Writing My Own Operating System ([Blog Post 1: Writing My Own Boot Loader](FrOS/blog_post_1.md), [Blog Post 2: Writing My Own VGA Driver](FrOS/blog_post_2.md), [Blog Post 3: Writing My Own Keyboard Driver](FrOS/blog_post_3.md), [Blog Post 4: Writing My Own Shell](FrOS/blog_post_4.md), [Blog Post 5: Writing My Own Dynamic Memory Management](FrOS/blog_post_5.md))
 - How to Get Your Next Software Engineering Job ([Blog Post](interview_prep/blog_post.md))
