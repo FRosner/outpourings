@@ -1,5 +1,7 @@
 ## Content
 
+- Using a Private GitHub Repository as a Helm Chart Repository ([Blog Post](helm-repo/blog_post.md))
+- Reclaiming Persistent Volumes in Kubernetes ([Blog Post](k8s-pvc/blog_post.md))
 - Automatic Configuration Reloading in Java Applications on Kubernetes ([Blog Post](k8s-java-config-reload/blog_post.md))
 - Managing Cluster Membership with Etcd ([Blog Post](etcd-playground/blog_post.md))
 - Writing a Simple TCP Server Using Kqueue ([Blog Post](kqueue/blog_post.md))
