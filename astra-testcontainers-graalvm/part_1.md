@@ -5,6 +5,7 @@ description: How We Built a Serverless Backend Using GraalVM, AWS Lambda and Ast
 tags: showdev, aws, cloud, lambda
 cover_image: https://miro.medium.com/max/1400/0*KntVWFkkYYP5VMJV
 canonical_url: https://medium.com/building-the-open-data-stack/how-we-built-a-serverless-backend-using-graalvm-aws-lambda-and-astra-db-part-1-829c4fbddbc
+series: How We Built a Serverless Backend Using GraalVM, AWS Lambda and Astra DB
 ---
 
 ## Introduction
