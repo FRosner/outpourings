@@ -4,7 +4,7 @@ published: true
 description: SNI is a TLS extension that allows a client to specify the hostname it is trying to reach in the first step of the TLS handshake process, enabling the server to present multiple certificates on the same IP address and port number.
 tags: networking, cloud, security
 cover_image: https://dev-to-uploads.s3.amazonaws.com/uploads/articles/3wqkb93i9i177e3u6ik4.jpg
-series: Networking in the Cloud
+series: Networking
 ---
 
 ## Introduction
