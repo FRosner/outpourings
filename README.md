@@ -1,5 +1,6 @@
 ## Content
 
+- Visualizing the Apache Cassandra Token Ring with Plotly ([Blog Post](cassandra_token_ring/blog_post.md))
 - Books That Helped Me Become a Tech Lead ([Blog Post](books/blog_post.md))
 - Using PromQL Subqueries to Calculate Service Level Indicators ([Blog Post](promql_sli/blog_post.md))
 - Using a Private GitHub Repository as a Helm Chart Repository ([Blog Post](helm-repo/blog_post.md))
