@@ -47,7 +47,7 @@ When you start pushing for the first time, it feels hard to gain momentum as the
 
 In order to build and maintain your momentum over time, you have several responsibilities:
 
-* **Increase** your snowball's **mass**. Lean new programming languages, frameworks, tools, and technologies. Get familiar with new code bases, and understand the business domain you are working in. Improve your tooling and workflows. Build lasting relationships with your co-workers, stakeholders and customers. All of this will allow you to overcome obstacles more easily.
+* **Increase** your snowball's **mass**. Learn new programming languages, frameworks, tools, and technologies. Get familiar with new code bases, and understand the business domain you are working in. Improve your tooling and workflows. Build lasting relationships with your co-workers, stakeholders and customers. All of this will allow you to overcome obstacles more easily.
 * **Plan** ahead to avoid hitting major obstacles like trees that risk stopping your snowball, or even making parts of it fall off. This means identifying potential blockers and risks early, and either avoiding them or mitigating them before you reach them.
 * **Keep pushing** your snowball. This means making progress on your tasks, delivering value. You need to find the right amount of pushing, as pushing too hard will make it hard to stop and navigate around obstacles or changing priorities.
 
@@ -218,7 +218,7 @@ In this post we explored various strategies to increase productivity as a softwa
 
 We saw how to build and maintain momentum, peeking into a productivity toolset, including Agile principles to ensure value delivery and adaptability, Kaizen for continuous improvement, zero-inbox techniques for managing messages, the use of to-do lists for daily task management, time boxing and time blocking for effective time management, the Pomodoro technique for maintaining focus, the Pareto Principle for maximizing value, Gemba walking to stay connected with the team's work, and the importance of quick escalation to resolve issues efficiently.
 
-What are your favorite productivity tools and techniques? How do you balance effectiveness and efficiency in your work? Please hare your thoughts in the comments!
+What are your favorite productivity tools and techniques? How do you balance effectiveness and efficiency in your work? Please share your thoughts in the comments!
 
 ---
 
