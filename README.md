@@ -1,5 +1,6 @@
 ## Content
 
+- Build Your Own Food Tracker with OpenAI Platform ([Blog Post](froods/blog_post.md))
 - Frank - How are you so productive? ([Blog Post](productivity/blog_post.md))
 - Visualizing the Apache Cassandra Token Ring with Plotly ([Blog Post](cassandra_token_ring/blog_post.md))
 - Books That Helped Me Become a Tech Lead ([Blog Post](books/blog_post.md))
