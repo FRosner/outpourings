@@ -1,5 +1,6 @@
 ## Content
 
+- Comparing OpenBLAS and Accelerate on Apple Silicon for BLAS Routines ([Blog Post](https://github.com/FRosner/cpp-simd-post/blob/main/BLOG.md))
 - Generating Application Specific Go Documentation Using Go AST and Antora ([Blog Post](generating_go_docs/blog_post.md))
 - Build Your Own Food Tracker with OpenAI Platform ([Blog Post](froods/blog_post.md))
 - Frank - How are you so productive? ([Blog Post](productivity/blog_post.md))
