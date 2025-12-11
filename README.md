@@ -1,5 +1,6 @@
 ## Content
 
+- Investigating Error Logs Using LangGraph, LangChain and Watsonx.ai ([Blog Post](log_investigation/blog_post.md))
 - libmalloc, jemalloc, tcmalloc, mimalloc - Exploring Different Memory Allocators ([Blog Post](https://github.com/FRosner/malloc-post/blob/main/BLOG.md))
 - Comparing OpenBLAS and Accelerate on Apple Silicon for BLAS Routines ([Blog Post](https://github.com/FRosner/cpp-simd-post/blob/main/BLOG.md))
 - Generating Application Specific Go Documentation Using Go AST and Antora ([Blog Post](generating_go_docs/blog_post.md))
