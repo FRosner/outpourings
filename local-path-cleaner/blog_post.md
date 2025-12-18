@@ -1,9 +1,9 @@
 ---
-title: Addressing the Shortcomings of Local Path Provisioner in Kubernetes
+title: Addressing the Limitations of Local Path Provisioner in Kubernetes
 published: false
-description: 
+description: In this post we will discuss how to manage ephemeral and semi-persistent local storage in Kubernetes by combining different Kubernetes features such as local ephemeral storage, filesystem quotas, and generic ephemeral volumes to address the limitations of local path provisioner.
 tags: kubernetes, cloud, devops, infrastructure
-cover_image: 
+cover_image: https://dev-to-uploads.s3.amazonaws.com/uploads/articles/3zcyrttro68enzhm57rt.png
 ---
 
 ## Temporary Storage in Kubernetes
@@ -195,8 +195,6 @@ By default, containers that have a `local-path` PVC mounted, can use as much spa
 Fortunately, filesystems such as XFS support configuring storage quotas. There is an excellent [minimal example](https://github.com/rancher/local-path-provisioner/blob/964c10d96f3098b3d8c0efc9db7e8ad253097ec9/examples/quota/setup#L1-L29) in the local path provisioner repository.
 
 ```bash
-#!/bin/sh
-
 xfsPath=$(dirname "$VOL_DIR")
 pvcName=$(basename "$VOL_DIR")
 
@@ -240,7 +238,7 @@ echo "UUID=$raid_dev_uuid /mnt/disks/ssd-array xfs defaults,nofail,noatime,prjqu
   | sudo tee -a /etc/fstab
 ```
 
-You can specify a custom helper pod, which uses a container image with the required dependency installed (`apk --no-cache add xfsprogs-extra`, e.g.) via the Helm values `configmap.helperPod`. We now have a way to address overcommitting and enforcing storage limits, which allows us to safely put multiple pods with `local-path` PVCs on the same node. Next, let's see how can we avoid unschedulable pods. 
+To achieve the latter, you can specify a custom helper pod, which uses a container image with the required dependency installed (`apk --no-cache add xfsprogs-extra`, e.g.) via the Helm values `configmap.helperPod`. We now have a way to address overcommitting and enforcing storage limits, which allows us to safely put multiple pods with `local-path` PVCs on the same node. Next, let's see how can we avoid unschedulable pods. 
 
 ## Generic Ephemeral Volumes
 
@@ -289,242 +287,288 @@ This should prevent the situation where the new STS replica becomes unschedulabl
 
 ## Local Path Cleaner
 
-TODO
+A few years ago, I wrote a Python application that I named "local path cleaner". It fulfills the following objectives:
+
+- Clean up released local-path PVs on nodes that are no longer part of the cluster.
+- Clean up local-path PVCs and the corresponding pods that are unschedulable.
+
+### Cleaning Released PVs
+
+To clean released local-path PVs, we implement the following steps:
+
+1. List all released local-path PVs.
+2. For each PV, check if the node it is bound to is part of the cluster.
+3. If the node is not part of the cluster, delete the PV.
+
+Let's walk through the code. We're going to use the Kubernetes Python client to interact with the API. First, we use `list_persistent_volume` to list all PVs. In Kubernetes, PVs are not namespaced, so we can list them all at once. Note that you should specify a page size and handle pagination accordingly.
 
 ```python
-import logging
-
-import time
-from kubernetes import config, client
-from kubernetes.client import CoreV1Api
-from kubernetes.client.models import V1NodeList, V1Node
-from kubernetes.client.models.v1_persistent_volume import V1PersistentVolume
-from kubernetes.client.models.v1_persistent_volume_list import V1PersistentVolumeList
-from kubernetes.client.models.v1_pod import V1Pod
-from kubernetes.client.models.v1_pod_condition import V1PodCondition
-from kubernetes.client.models.v1_pod_status import V1PodStatus
-from prometheus_client import Counter
-
-from app.config import DRY_RUN, CLEAN_STUCK_PODS, K8S_API_PAGE_LIMIT, CLEAN_RELEASED_PVS, \
-    SLEEP_BEFORE_DELETING_POD_SECONDS, CLEAN_UNSCHEDULABLE_PODS_AND_PVCS, NAMESPACE_PATTERN
-from app.metrics import c_deleted_pvs, g_consecutive_errors, c_deleted_pvcs_no_node, c_deleted_pvcs_pod_unschedulable, c_deleted_pods_no_node, c_deleted_pods_pod_unschedulable
-
-POD_CONTROLLERS = ['ReplicaSet', 'StatefulSet', 'Job']
-
-
-def namespace_matches(namespace):
-    return NAMESPACE_PATTERN.match(namespace) is not None
-
-
-def create_core_api(local_mode):
-    if local_mode:
-        logging.info("Running in local mode, attempting to load kube configuration from file.")
-        config.load_kube_config()
-    else:
-        logging.info(
-            "Running in in-cluster mode, attempting to load the kube configuration from within the kubernetes cluster.")
-        config.load_incluster_config()
-    return client.CoreV1Api()
-
-
-def get_pending_pods(v1: CoreV1Api):
-    pods = []
-    _continue = None
-
-    while True:
-        ret = v1.list_pod_for_all_namespaces(watch=False, _continue=_continue, limit=K8S_API_PAGE_LIMIT,
-                                             field_selector="status.phase=Pending")
-        for pod in ret.items:
-            if namespace_matches(pod.metadata.namespace):
-                pods.append(pod)
-            else:
-                logging.debug(f"Skipping pod {pod.metadata.namespace}/{pod.metadata.name} because it does not match the namespace regex")
-        _continue = ret.metadata._continue
-        if not _continue:
-            break
-
-    return pods
-
-
-def find_pods_with_pvcs_on_active_nodes(pods, pvcs, nodes):
-    pvc_res = []
-    pods_res = []
-    node_names = set(map(lambda n: n.metadata.name, nodes))
-    pvcs_by_name = {pvc.metadata.name: pvc for pvc in pvcs}
-    for pod in pods:
-        if get_pod_owner_type(pod) not in POD_CONTROLLERS:
-            # We don't want to delete pods that are not managed by a controller
-            continue
-        for volume in pod.spec.volumes:
-            if volume.persistent_volume_claim:
-                pod_pvc = pvcs_by_name.get(volume.persistent_volume_claim.claim_name)
-                if pod_pvc is not None and pod_pvc.metadata.annotations['volume.kubernetes.io/selected-node'] in node_names:
-                    pods_res.append(pod)
-                    pvc_res.append(pod_pvc)
-                    break
-
-    return pvc_res, pods_res
-
-
-def filter_pods_with_pvc_conflict(pods, pvcs):
-    res = []
-    pvc_names = set(map(lambda pvc: pvc.metadata.name, pvcs))
-    for pod in pods:
-        if get_pod_owner_type(pod) not in POD_CONTROLLERS:
-            # We don't want to delete pods that are not managed by a controller
-            continue
-        pod_pvc = next((volume for volume in pod.spec.volumes if
-                        volume.persistent_volume_claim and volume.persistent_volume_claim.claim_name in pvc_names),
-                       None)
-        if pod_pvc is not None:
-            res.append(pod)
-    return res
-
-
-def delete_pods(v1: CoreV1Api, pods, reason, counter: Counter, dry_run=DRY_RUN):
-    for pod in pods:
-        logging.info("Deleting pending pod {}/{} (reason: {})".format(pod.metadata.namespace, pod.metadata.name, reason))
-        counter.inc()
-        if not dry_run:
-            v1.delete_namespaced_pod(pod.metadata.name, pod.metadata.namespace)
-
-
-def delete_pending_pods(v1: CoreV1Api, pvcs, reason, clean_stuck_pods=CLEAN_STUCK_PODS, dry_run=DRY_RUN):
-    logging.debug("Deleting pending pods with PVC conflict (reason: {})".format(reason))
-    if clean_stuck_pods:
-        pending_pods = get_pending_pods(v1)
-        deletion_candidates = filter_pods_with_pvc_conflict(pending_pods, pvcs)
-        delete_pods(v1, deletion_candidates, reason, counter=c_deleted_pods_no_node, dry_run=dry_run)
-
-
 def get_released_local_path_pvs(v1: CoreV1Api):
-    pvs = []
+    result = []
     _continue = None
 
     while True:
-        ret: V1PersistentVolumeList = v1.list_persistent_volume(watch=False, _continue=_continue, limit=K8S_API_PAGE_LIMIT)
-        for pv in ret.items:
+        pvs: V1PersistentVolumeList = v1.list_persistent_volume(
+            watch=False, 
+            _continue=_continue,
+        )
+        for pv in pvs.items:
             storage_class = pv.spec.storage_class_name
             phase = pv.status.phase
             if storage_class == 'local-path' and phase == "Released":
-                pvs.append(pv)
-        _continue = ret.metadata._continue
+                result.append(pv)
+        _continue = pvs.metadata._continue
         if not _continue:
             break
 
-    return pvs
+    return result
+```
 
+Next, let's write a similar function to obtain all nodes:
 
-def get_bound_local_path_pvcs(v1: CoreV1Api):
-    pvcs = []
-    _continue = None
-
-    while True:
-        ret = v1.list_persistent_volume_claim_for_all_namespaces(watch=False, _continue=_continue,
-                                                                 limit=K8S_API_PAGE_LIMIT)
-        for pvc in ret.items:
-            if namespace_matches(pvc.metadata.namespace):
-                storage_class = pvc.spec.storage_class_name
-                phase = pvc.status.phase
-                if storage_class == 'local-path' and phase == "Bound":
-                    pvcs.append(pvc)
-            else:
-                logging.debug(f"Skipping PVC {pvc.metadata.namespace}/{pvc.metadata.name} because it does not match the namespace regex")
-        _continue = ret.metadata._continue
-        if not _continue:
-            break
-
-    return pvcs
-
-
+```python
 def get_nodes(v1: CoreV1Api) -> list[V1Node]:
-    logging.debug("Getting nodes")
-    nodes: list[V1Node] = []
+    result: list[V1Node] = []
     _continue = None
 
     while True:
-        ret: V1NodeList = v1.list_node(watch=False, _continue=_continue, limit=K8S_API_PAGE_LIMIT)
-        for node in ret.items:
-            nodes.append(node)
-        _continue = ret.metadata._continue
+        nodes: V1NodeList = v1.list_node(
+            watch=False, 
+            _continue=_continue
+        )
+        for node in nodes.items:
+            result.append(node)
+        _continue = nodes.metadata._continue
         if not _continue:
             break
 
-    logging.debug("Got {} nodes".format(len(nodes)))
-    return nodes
+    return result
+```
 
+Then, we can find the PVs that are bound to nodes which are no longer part of the cluster. We'll walk through all the PVs, checking the node affinity selector terms to determine the assigned node. E.g. the following PV is bound to node `gke-main-data-node-c51c4677-285f`:
 
-def find_pvs_on_missing_nodes(pvs, nodes: list[V1Node]):
+```json
+{
+  "apiVersion": "v1",
+  "kind": "PersistentVolume",
+  "metadata": {
+    "annotations": {
+      "pv.kubernetes.io/provisioned-by": "cluster.local/local-path-storage-local-path-provisioner"
+    },
+    "name": "pvc-db-001"
+  },
+  "spec": {
+    "capacity": {
+      "storage": "2000Gi"
+    },
+    "hostPath": {
+      "path": "/mnt/disks/ssd-array/pvc-db-app-0",
+      "type": "DirectoryOrCreate"
+    },
+    "nodeAffinity": {
+      "required": {
+        "nodeSelectorTerms": [
+          {
+            "matchExpressions": [
+              {
+                "key": "kubernetes.io/hostname",
+                "operator": "In",
+                "values": [
+                  "gke-main-data-node-c51c4677-285f"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "persistentVolumeReclaimPolicy": "Delete",
+    "storageClassName": "local-path",
+    "volumeMode": "Filesystem"
+  }
+}
+```
+
+And here's the Python code. We don't delete the PVs immediately but gather them first so we can implement a dry-run mode where we simply log all the PVs we would have deleted.
+
+```python
+def find_pvs_on_missing_nodes(v1: CoreV1Api, pvs):
+    nodes: list[V1Node] = get_nodes(v1)
     deletion_candidates = []
     node_names = set(map(lambda n: n.metadata.name, nodes))
     pv: V1PersistentVolume
     for pv in pvs:
         node_selector_match_expression = pv.spec.node_affinity.required.node_selector_terms[0].match_expressions[0]
-        if node_selector_match_expression.key == 'kubernetes.io/hostname' and node_selector_match_expression.operator == 'In' \
-                and node_selector_match_expression.values[0] not in node_names:
+        if node_selector_match_expression.key == 'kubernetes.io/hostname' \ 
+            and node_selector_match_expression.operator == 'In' \
+            and node_selector_match_expression.values[0] not in node_names:
             deletion_candidates.append(pv)
-
     return deletion_candidates
+```
 
+Finally, we can put everything together and delete the PVs:
 
-def find_pvcs_on_missing_nodes(pvcs, nodes):
-    deletion_candidates = []
-    node_names = set(map(lambda n: n.metadata.name, nodes))
-    for pvc in pvcs:
-        if 'volume.kubernetes.io/selected-node' in pvc.metadata.annotations \
-                and pvc.metadata.annotations['volume.kubernetes.io/selected-node'] not in node_names:
-            deletion_candidates.append(pvc)
+```python
+def clean_released_pvs(v1: CoreV1Api):
+    pvs = get_released_local_path_pvs(v1)
+    deletion_candidates = find_pvs_on_missing_nodes(pvs)
+    for candidate in deletion_candidates:
+        v1.delete_persistent_volume(candidate.metadata.name)
+```
 
-    return deletion_candidates
+### Cleaning Unschedulable Pods
 
+When using `local-path` PVCs via `StatefulSet` instead of ephemeral volumes on the pod level, pods can become unschedulable. A common reason is that the PVC is bound to a node that has been scaled down by the cluster autoscaler, has been cordoned, or another workload has moved onto it so it does not have enough capacity.
 
-def delete_pvs(v1: CoreV1Api, candidates, dry_run=DRY_RUN):
-    for candidate in candidates:
-        c_deleted_pvs.inc()
-        logging.info(
-            "Deleting PV {} (PVC: {}/{}, phase: {}, class: {}, node: {}) because the node does not exist anymore".format(
-                candidate.metadata.name,
-                candidate.spec.claim_ref.namespace,
-                candidate.spec.claim_ref.name, candidate.status.phase,
-                candidate.spec.storage_class_name,
-                candidate.spec.node_affinity.required.node_selector_terms[0].match_expressions[0].values[0]
-            ))
-        if not dry_run:
-            v1.delete_persistent_volume(candidate.metadata.name)
+While it is straightforward to reliably detect the first case, by comparing the node the PVC is bound to with the list of active nodes, I did not find a way to detect the other two cases. The Kubernetes events sometimes show hints about volume affinity conflicts, but this did not happen reliably in all cases.
 
+In the end I decided to purge bound local-path PVCs of unschedulable pods aggressively, as they could always be recreated and I'd rather live with losing temporary data than dealing with a prolonged service outage. Here's the high level algorithm:
 
-def delete_pvcs(v1: CoreV1Api, candidates, reason, counter: Counter, dry_run=DRY_RUN):
-    for candidate in candidates:
-        counter.inc()
-        logging.info("Deleting PVC {}/{} (phase: {}, class: {}, node: {}) because {}".format(
-            candidate.metadata.namespace,
-            candidate.metadata.name,
-            candidate.status.phase,
-            candidate.spec.storage_class_name,
-            candidate.metadata.annotations['volume.kubernetes.io/selected-node'],
-            reason
-        ))
-        if not dry_run:
-            v1.delete_namespaced_persistent_volume_claim(candidate.metadata.name, candidate.metadata.namespace)
+1. List all pending pods.
+2. Identify unschedulable pods from the pending pods.
+3. List all bound local-path PVCs.
+4. For each unschedulable pod, check if it has a bound local-path PVC.
+5. Delete the PVC and the pod, if the pod has a managing controller.
 
+I found that deleting not only the PVC but also the pod reduces the time to recovery, as the managing controller will immediately recreate both the PVC and the pod in that case, triggering the scheduler and subsequently the local-path provisioner to get the pod onto a new node. Let's build the code step by step:
 
-def clean_released_pvs(v1: CoreV1Api, nodes: list[V1Node], cleaning_on=CLEAN_RELEASED_PVS, dry_run=DRY_RUN):
-    logging.debug("Cleaning released local-path PVs on missing nodes")
-    if cleaning_on:
-        pvs = get_released_local_path_pvs(v1)
-        deletion_candidates = find_pvs_on_missing_nodes(pvs, nodes)
-        delete_pvs(v1, deletion_candidates, dry_run=dry_run)
+First, we want to list all pending pods. We can use the `list_pod_for_all_namespaces` method with the field selector `status.phase=Pending` for that. Here we can also employ some namespace filtering to only consider pods in namespaces that match a given regular expression.
 
+```python
+def get_pending_pods(v1: CoreV1Api):
+    result = []
+    _continue = None
 
-def clean_orphaned_pvcs(v1: CoreV1Api, nodes: list[V1Node], cleaning_on=CLEAN_STUCK_PODS, dry_run=DRY_RUN):
-    logging.debug("Cleaning orphaned local-path PVCs on missing nodes")
-    if cleaning_on:
-        pvcs = get_bound_local_path_pvcs(v1)
-        deletion_candidates = find_pvcs_on_missing_nodes(pvcs, nodes)
-        delete_pvcs(v1, deletion_candidates, reason="the node does not exist anymore", counter=c_deleted_pvcs_no_node, dry_run=dry_run)
-        return deletion_candidates
-    return []
+    while True:
+        pods = v1.list_pod_for_all_namespaces(
+            watch=False, _continue=_continue,
+            field_selector="status.phase=Pending"
+        )
+        result += pods.items
+        _continue = pods.metadata._continue
+        if not _continue:
+            break
 
+    return result
+```
+
+Next, we keep only unschedulable pods. The information whether a pod is unschedulable is stored in `status.conditions`. Here's an example:
+
+```json
+{
+    "apiVersion": "v1",
+    "kind": "Pod",
+    "status": {
+        "conditions": [
+            {
+                "lastProbeTime": null,
+                "lastTransitionTime": "2025-01-10T13:20:15Z",
+                "message": "0/3 nodes are available: 1 node(s) were unschedulable. preemption: 0/3 nodes are available: 3 Preemption is not helpful for scheduling.",
+                "reason": "Unschedulable",
+                "status": "False",
+                "type": "PodScheduled"
+            }
+        ],
+        "phase": "Pending",
+        "qosClass": "Burstable"
+    }
+}
+```
+
+Based on that we can write a helper function `get_condition` that allows to get the condition of a given type from a pod (or `None` if it does not exist):
+
+```python
+def get_condition(pod: V1Pod, condition_type):
+    pod_status: V1PodStatus = pod.status
+    condition: V1PodCondition
+    return next(
+        (
+            condition
+            for condition in pod_status.conditions
+            if condition.type == condition_type
+        ),
+        None,
+    )
+```
+
+Then we can write a function to filter unschedulable pods by checking the `PodScheduled` condition to be `False` and the reason to be `Unschedulable`:
+
+```python
+def filter_unschedulable_pods(pods):
+    result = []
+    for pod in pods:
+        pod_condition: V1PodCondition = get_condition(pod, 'PodScheduled')
+        if pod_condition is not None \
+            and pod_condition.status == 'False' \
+            and pod_condition.reason == 'Unschedulable':
+            result.append(pod)
+    return result
+```
+
+Now that we know which pods are unschedulable, we need to keep only the ones that have bound PVCs. Unfortunately, this information is not available in the pod resource, so we need to fetch the PVCs, too. Here you can do some namespace filtering again.
+
+```python
+def get_bound_local_path_pvcs(v1: CoreV1Api):
+    result = []
+    _continue = None
+
+    while True:
+        pvcs = v1.list_persistent_volume_claim_for_all_namespaces(
+            watch=False,
+            _continue=_continue,
+        )
+        for pvc in pvcs.items:
+            storage_class = pvc.spec.storage_class_name
+            phase = pvc.status.phase
+            if storage_class == 'local-path' and phase == "Bound":
+                result.append(pvc)
+        _continue = pvcs.metadata._continue
+        if not _continue:
+            break
+
+    return result
+```
+
+Now we combine the unschedulable pods and the PVCs to find the pods that have a bound PVC. We convert the bound local-path PVC list into a dictionary by PVC name to efficiently check each of the volumes of each unschedulable pod and match them if possible. 
+
+```python
+def find_pods_with_pvcs(pods, pvcs):
+    pvc_res = []
+    pods_res = []
+    pvcs_by_name = {pvc.metadata.name: pvc for pvc in pvcs}
+    for pod in pods:
+        for volume in pod.spec.volumes:
+            if volume.persistent_volume_claim:
+                pod_pvc = pvcs_by_name.get(volume.persistent_volume_claim.claim_name)
+                pods_res.append(pod)
+                pvc_res.append(pod_pvc)
+                break
+
+    return pvc_res, pods_res
+```
+
+That's it! Now we can combine everything together. I ended up adding a small `sleep` call between deleting the PVC and the pod to reduce the risk of hitting a race condition where the pod would get recreated before the PVC, causing it to become unschedulable again.
+
+```python
+def clean_unschedulable_pod_pvc_conflicts(v1: CoreV1Api):
+    pending_pods = get_pending_pods(v1)
+    unschedulable_pods = filter_unschedulable_pods(pending_pods)
+    pvcs = get_bound_local_path_pvcs(v1)
+    pvc_deletion_candidates, pod_deletion_candidates = find_pods_with_pvcs(unschedulable_pods, pvcs)
+
+    for candidate in pvc_deletion_candidates:
+        v1.delete_namespaced_persistent_volume_claim(candidate.metadata.name, candidate.metadata.namespace)
+
+    time.sleep(2)
+    
+    for candidate in pod_deletion_candidates:
+        v1.delete_namespaced_pod(candidate.metadata.name, candidate.metadata.namespace)
+```
+
+This method relies on the fact that upon deletion of the PVC and the pod, some controller will recreate them. To prevent accidentally deleting pods that are not managed by a `StatefulSet`, we can add a filter based on the owner reference:
+
+```python
+POD_CONTROLLERS = ['StatefulSet']
 
 def get_pod_owner_type(pod):
     owner_references = pod.metadata.owner_references
@@ -537,332 +581,18 @@ def get_pod_owner_type(pod):
 
     return None
 
-
-def get_condition(pod: V1Pod, condition_type):
-    pod_status: V1PodStatus = pod.status
-    condition: V1PodCondition
-    return next(
-        (
-            condition
-            for condition in pod_status.conditions
-            if condition.type == condition_type
-        ),
-        None,
-    )
-
-
-def clean_orphaned_pvcs_and_pods(v1: CoreV1Api, nodes: list[V1Node], sleep_before_deleting_pod_seconds, dry_run=DRY_RUN):
-    deleted_pvcs = clean_orphaned_pvcs(v1, nodes, dry_run=dry_run)
-    logging.info("Sleeping a bit before deleting stuck pods to make sure the new replica gets a new PVC")
-    time.sleep(sleep_before_deleting_pod_seconds)
-    delete_pending_pods(v1, deleted_pvcs, reason="local-path PVC belongs to a non-existing node", dry_run=dry_run)
-
-
-def clean_unschedulable_pod_pvc_conflicts(v1: CoreV1Api, nodes: list[V1Node], sleep_before_deleting_pod_seconds,
-                                          clean_unschedulable_pods=CLEAN_UNSCHEDULABLE_PODS_AND_PVCS, clean_pods=CLEAN_STUCK_PODS, dry_run=DRY_RUN):
-    logging.debug("Cleaning unschedulable pods with bound local path PVCs.")
-    pending_pods = get_pending_pods(v1)
-    unschedulable_pods = filter_unschedulable_pods(pending_pods)
-    pvcs = get_bound_local_path_pvcs(v1)
-    pvc_deletion_candidates, pod_deletion_candidates = find_pods_with_pvcs_on_active_nodes(unschedulable_pods, pvcs, nodes)
-
-    reason = "local-path PVC belongs to an existing node that cannot schedule the pod"
-    if clean_unschedulable_pods:
-        delete_pvcs(v1, pvc_deletion_candidates, reason, counter=c_deleted_pvcs_pod_unschedulable, dry_run=dry_run)
-
-        logging.info("Sleeping a bit before deleting unschedulable pods to make sure the new replica gets a new PVC")
-        time.sleep(sleep_before_deleting_pod_seconds)
-        if clean_pods:
-            delete_pods(v1, pod_deletion_candidates, reason, counter=c_deleted_pods_pod_unschedulable, dry_run=dry_run)
-    else:
-        for pod_candidate, pvc_candidate in zip(pod_deletion_candidates, pvc_deletion_candidates):
-            logging.info(
-                f"Would delete pod {pod_candidate.metadata.namespace}/{pod_candidate.metadata.name} and PVC {pvc_candidate.metadata.namespace}/{pvc_candidate.metadata.name} ({reason}), "
-                f"but CLEANER_INCLUDE_UNSCHEDULABLE_PODS_AND_PVCS is turned off.")
-
-
-def filter_unschedulable_pods(pods):
-    res = []
-    for pod in pods:
-        pod_condition: V1PodCondition = get_condition(pod, 'PodScheduled')
-        if pod_condition is not None and pod_condition.status == 'False' and pod_condition.reason == 'Unschedulable':
-            res.append(pod)
-    return res
-
-
-def clean(v1: CoreV1Api, sleep_before_deleting_pod_seconds=SLEEP_BEFORE_DELETING_POD_SECONDS, dry_run=DRY_RUN):
-    nodes: list[V1Node] = get_nodes(v1)
-    clean_released_pvs(v1, nodes, dry_run=dry_run)
-    clean_orphaned_pvcs_and_pods(v1, nodes, sleep_before_deleting_pod_seconds, dry_run=dry_run)
-    clean_unschedulable_pod_pvc_conflicts(v1, nodes, sleep_before_deleting_pod_seconds, dry_run=dry_run)
-    g_consecutive_errors.set(0)
+for pod in pods:
+    if get_pod_owner_type(pod) in POD_CONTROLLERS:
+        # Delete the pod and PVC
 ```
-
-```python
-import logging
-import os
-import re
-
-LOG_LEVEL = os.getenv('CLEANER_LOG_LEVEL', 'INFO')
-print("Log level set to {}".format(LOG_LEVEL))
-logging.basicConfig(level=LOG_LEVEL, format='%(asctime)s %(message)s')
-
-LOCAL_MODE = os.getenv('CLEANER_LOCAL_MODE', 'False') == 'True'
-logging.info("Local mode set to {}".format(LOCAL_MODE))
-
-RUN_ONCE = os.getenv('CLEANER_RUN_ONCE', 'False') == 'True'
-logging.info("Run once set to {}".format(RUN_ONCE))
-
-CLEANER_PORT = int(os.getenv('CLEANER_PORT', '8000'))
-logging.info("HTTP server port set to {}".format(CLEANER_PORT))
-
-SLEEP_INTERVAL = int(os.getenv('CLEANER_SLEEP_INTERVAL_SECONDS', "60"))
-logging.info("Sleep interval set to {}s".format(SLEEP_INTERVAL))
-
-DRY_RUN = os.getenv('CLEANER_DRY_RUN', 'True') == 'True'
-logging.info("Dry run set to {}".format(DRY_RUN))
-
-CLEAN_RELEASED_PVS = os.getenv('CLEANER_CLEAN_RELEASED_PVS', 'True') == 'True'
-logging.info("Cleaning released PVs set to {}".format(CLEAN_RELEASED_PVS))
-
-CLEAN_STUCK_PODS = os.getenv('CLEANER_CLEAN_STUCK_PODS', 'True') == 'True'
-logging.info("Deleting stuck pods set to {}".format(CLEAN_STUCK_PODS))
-
-K8S_API_PAGE_LIMIT = int(os.getenv('CLEANER_K8S_API_PAGE_LIMIT', '20'))
-logging.info("K8s API page limit set to {}".format(K8S_API_PAGE_LIMIT))
-
-SLEEP_BEFORE_DELETING_POD_SECONDS = int(os.getenv('CLEANER_SLEEP_BEFORE_DELETING_POD_SECONDS', '10'))
-logging.info("Sleep before deleting pod set to {}s".format(SLEEP_BEFORE_DELETING_POD_SECONDS))
-
-CLEAN_UNSCHEDULABLE_PODS_AND_PVCS = os.getenv('CLEANER_INCLUDE_UNSCHEDULABLE_PODS_AND_PVCS', 'False') == 'True'
-logging.info("Cleaning unschedulable pods and PVCs on active nodes set to {}".format(CLEAN_UNSCHEDULABLE_PODS_AND_PVCS))
-
-NAMESPACE_REGEX = os.getenv('CLEANER_NAMESPACE_REGEX', '.*')
-NAMESPACE_PATTERN = re.compile(NAMESPACE_REGEX)
-logging.info("Namespace regex set to {}".format(NAMESPACE_REGEX))
-```
-
-## Testing
-
-```python
-import os
-from unittest.mock import MagicMock, call, patch
-
-import urllib3
-from kubernetes.client import CoreV1Api
-from kubernetes.client.api_client import ApiClient
-from kubernetes.client.models.v1_node_list import V1NodeList
-from kubernetes.client.models.v1_pod import V1Pod
-from kubernetes.client.models.v1_pod_condition import V1PodCondition
-from kubernetes.client.models.v1_pod_list import V1PodList
-from kubernetes.client.rest import RESTResponse
-
-from app.k8s import get_nodes, get_released_local_path_pvs, get_bound_local_path_pvcs, get_pending_pods, clean, get_condition, clean_unschedulable_pod_pvc_conflicts
-
-api_client = ApiClient()
-
-
-def load_resource(file, resource_type):
-    with open(os.path.join(os.path.dirname(__file__), 'resources', file), 'r') as f:
-        urllib3_response = urllib3.HTTPResponse(body=f.read())
-        response = RESTResponse(urllib3_response)
-        return api_client.deserialize(response, resource_type)
-
-
-def test_get_nodes():
-    nodes_response: V1NodeList = load_resource('writerxl_nodes.json', 'V1NodeList')
-    v1 = MagicMock(spec=CoreV1Api)
-    v1.list_node.return_value = nodes_response
-
-    nodes = get_nodes(v1)
-
-    assert set(map(lambda node: node.metadata.name, nodes)) == {
-        'gke-main-writerxl-v3-be6cf51e-zgvj',
-        'gke-main-writerxl-v3-c51c4677-285f',
-    }
-
-
-def test_get_released_local_path_pvs():
-    pvs_response = load_resource('writerxl_pvs.json', 'V1PersistentVolumeList')
-    v1 = MagicMock(spec=CoreV1Api)
-    v1.list_persistent_volume.return_value = pvs_response
-
-    pvs = get_released_local_path_pvs(v1)
-
-    assert set(map(lambda pv: pv.metadata.name, pvs)) == {
-        "pvc-released-on-existing-node-001",
-        "pvc-released-non-existing-node-001",
-    }
-
-
-def test_get_bound_local_path_pvcs():
-    pvcs_response = load_resource('writerxl_pvcs.json', 'V1PersistentVolumeClaimList')
-    v1 = MagicMock(spec=CoreV1Api)
-    v1.list_persistent_volume_claim_for_all_namespaces.return_value = pvcs_response
-
-    pvcs = get_bound_local_path_pvcs(v1)
-
-    assert set(map(lambda pvc: pvc.metadata.name, pvcs)) == {
-        'ad-hoc-pod-volume',
-        'db-storagerack-volume-db-storage-rack0-v0-0',
-        'db-storagerack-volume-db-storage-rack1-v0-0',
-        'db-storagerack-volume-db-storage-rack2-v0-0',
-    }
-
-
-def test_get_pending_pods():
-    pods_response = load_resource('writerxl_pending_pods.json', 'V1PodList')
-    v1 = MagicMock(spec=CoreV1Api)
-    v1.list_pod_for_all_namespaces.return_value = pods_response
-
-    pods = get_pending_pods(v1)
-
-    v1.list_pod_for_all_namespaces.assert_called_with(watch=False, _continue=None, limit=20, field_selector="status.phase=Pending")
-
-    assert set(map(lambda pod: pod.metadata.name, pods)) == {
-        'db-storage-rack2-v0-0', 'ad-hoc-pod',
-    }
-
-
-def test_clean_unschedulable_pod_pvc_conflicts__happy_path():
-    v1 = MagicMock(spec=CoreV1Api)
-    v1.list_node.return_value = load_resource('unschedulable_node.json', 'V1NodeList')
-    nodes = get_nodes(v1)
-    v1.list_persistent_volume_claim_for_all_namespaces.return_value = load_resource('unschedulable_pvc.json', 'V1PersistentVolumeClaimList')
-    v1.list_pod_for_all_namespaces.return_value = load_resource('unschedulable_pod.json', 'V1PodList')
-
-    clean_unschedulable_pod_pvc_conflicts(v1, nodes, clean_unschedulable_pods=True, clean_pods=True,
-                                          sleep_before_deleting_pod_seconds=0, dry_run=False)
-
-    v1.delete_namespaced_pod.assert_has_calls([call.delete_namespaced_pod('sts-1-0', 'local-path-storage')])
-
-
-def test_clean_unschedulable_pod_pvc_conflicts__pvc_not_bound():
-    v1 = MagicMock(spec=CoreV1Api)
-    v1.list_node.return_value = load_resource('unschedulable_node.json', 'V1NodeList')
-    nodes = get_nodes(v1)
-    v1.list_persistent_volume_claim_for_all_namespaces.return_value = load_resource('unschedulable_unbound_pvc.json', 'V1PersistentVolumeClaimList')
-    v1.list_pod_for_all_namespaces.return_value = load_resource('unschedulable_pod.json', 'V1PodList')
-
-    clean_unschedulable_pod_pvc_conflicts(v1, nodes, clean_unschedulable_pods=True, clean_pods=True,
-                                          sleep_before_deleting_pod_seconds=0, dry_run=False)
-
-    v1.delete_namespaced_pod.assert_not_called()
-
-
-def test_clean_unschedulable_pod_pvc_conflicts__feature_turned_off():
-    v1 = MagicMock(spec=CoreV1Api)
-    v1.list_node.return_value = load_resource('unschedulable_node.json', 'V1NodeList')
-    nodes = get_nodes(v1)
-    v1.list_persistent_volume_claim_for_all_namespaces.return_value = load_resource('unschedulable_pvc.json', 'V1PersistentVolumeClaimList')
-    v1.list_pod_for_all_namespaces.return_value = load_resource('unschedulable_pod.json', 'V1PodList')
-
-    clean_unschedulable_pod_pvc_conflicts(v1, nodes, clean_unschedulable_pods=False, clean_pods=True,
-                                          sleep_before_deleting_pod_seconds=0, dry_run=False)
-
-    v1.delete_namespaced_pod.assert_not_called()
-
-
-def test_clean_unschedulable_pod_pvc_conflicts__no_deletion_if_not_unschedulable():
-    v1 = MagicMock(spec=CoreV1Api)
-    v1.list_node.return_value = load_resource('unschedulable_node.json', 'V1NodeList')
-    nodes = get_nodes(v1)
-    v1.list_persistent_volume_claim_for_all_namespaces.return_value = load_resource('unschedulable_pvc.json', 'V1PersistentVolumeClaimList')
-    v1.list_pod_for_all_namespaces.return_value = load_resource('scheduler_error_pod.json', 'V1PodList')
-
-    clean_unschedulable_pod_pvc_conflicts(v1, nodes, clean_unschedulable_pods=True, clean_pods=True,
-                                          sleep_before_deleting_pod_seconds=0, dry_run=False)
-
-    v1.delete_namespaced_pod.assert_not_called()
-
-
-@patch('app.k8s.namespace_matches')
-def test_clean(mock_namespace_matches):
-    mock_namespace_matches.side_effect = lambda namespace: namespace == 'db-shadow'
-
-    v1 = MagicMock(spec=CoreV1Api)
-    v1.list_node.return_value = load_resource('writerxl_nodes.json', 'V1NodeList')
-    v1.list_persistent_volume.return_value = load_resource('writerxl_pvs.json', 'V1PersistentVolumeList')
-    v1.list_persistent_volume_claim_for_all_namespaces.return_value = load_resource('writerxl_pvcs.json', 'V1PersistentVolumeClaimList')
-    v1.list_pod_for_all_namespaces.return_value = load_resource('writerxl_pending_pods.json', 'V1PodList')
-
-    clean(v1, sleep_before_deleting_pod_seconds=0, dry_run=False)
-
-    v1.delete_persistent_volume.assert_has_calls([call.delete_persistent_volume('pvc-released-non-existing-node-001')])
-    v1.delete_namespaced_persistent_volume_claim.assert_has_calls(
-        [call.delete_namespaced_persistent_volume_claim('db-storagerack-volume-db-storage-rack2-v0-0', 'db-shadow')])
-    assert 1 == v1.delete_persistent_volume.call_count
-    v1.delete_namespaced_pod.assert_has_calls([call.delete_namespaced_pod('db-storage-rack2-v0-0', 'db-shadow')])
-    assert 1 == v1.delete_namespaced_pod.call_count
-
-
-def test_clean_dry_run():
-    v1 = MagicMock(spec=CoreV1Api)
-    v1.list_node.return_value = load_resource('writerxl_nodes.json', 'V1NodeList')
-    v1.list_persistent_volume.return_value = load_resource('writerxl_pvs.json', 'V1PersistentVolumeList')
-    v1.list_persistent_volume_claim_for_all_namespaces.return_value = load_resource('writerxl_pvcs.json', 'V1PersistentVolumeClaimList')
-    v1.list_pod_for_all_namespaces.return_value = load_resource('writerxl_pending_pods.json', 'V1PodList')
-
-    clean(v1, sleep_before_deleting_pod_seconds=0, dry_run=True)
-
-    v1.delete_persistent_volume.assert_not_called()
-    v1.delete_namespaced_persistent_volume_claim.assert_not_called()
-    v1.delete_namespaced_pod.assert_not_called()
-
-
-def test_get_condition():
-    pods: V1PodList = load_resource('writerxl_pods.json', 'V1PodList')
-    pod: V1Pod = pods.items[0]
-    scheduled_condition: V1PodCondition = get_condition(pod, 'PodScheduled')
-    assert scheduled_condition.status == "True"
-```
-
-```toml
-[tool.poetry.dependencies]
-python = "^3.11"
-kubernetes = "^31.0.0"
-prometheus-client = "^0.21.1"
-python-dateutil = "^2.9.0.post0"
-
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.3.4"
-urllib3 = "^2.2.3"
-```
-
-
-```md
-## Description
-
-
-
-## Configuration
-
-### Feature Toggles / Configuration
-
-- `CLEANER_DRY_RUN=True|False` to configure dry run by setting 
-- `CLEANER_NAMESPACE_REGEX=".*"` to configure the namespace regex to filter the PVCs and pods to clean. PVs are not namespaced.
-- `CLEANER_CLEAN_RELEASED_PVS=True|False` to configure whether to clean released local-path PVs
-- `CLEANER_CLEAN_STUCK_PODS=True|False` to configure whether to clean orphaned (node not part of cluster) local-path PVCs and get the corresponding pods unstuck
-- `CLEANER_INCLUDE_UNSCHEDULABLE_PODS_AND_PVCS=True|False` to configure whether to clean local-path PVCs and pods on active nodes if the pods are unschedulable, e.g. because the node does not have enough capacity.
-- `CLEANER_SLEEP_INTERVAL_SECONDS=60` to configure sleep interval between runs
-- `CLEANER_SLEEP_BEFORE_DELETING_POD_SECONDS=10` to configure sleep interval after deleting PVC, before deleting the respective pod.
-- `CLEANER_K8S_API_PAGE_LIMIT=20` to configure the page size when using k8s APIs.
 
 ### Operations
 
-- `CLEANER_LOCAL_MODE=True|False` to configure in-cluster (running inside a pod) vs local mode with 
-- `CLEANER_RUN_ONCE=True|False` to configure whether to run the cleaner once or in a loop (recommended for quick local testing)
-- `CLEANER_PORT=8000` to set the port the HTTP server will be running on
+We can run this code on a schedule, either by using a Kubernetes cron job, or by having a pod running with a sleep loop. I prefer the long-running pod by using a `Deployment`, as we want the code to run very frequently to reduce the impact of unschedulable pods. I recommend implementing proper logging, metrics, a dry-run mode, a configurable interval, filters, and flags for the different pieces for optimal operability.
 
-### Observability
-
-- `CLEANER_LOG_LEVEL=DEBUG|INFO|WARNING|ERROR|CRITICAL` to configure log level 
-- `PROMETHEUS_DISABLE_CREATED_SERIES=True|False` to disable `_created` metrics. See https://github.com/prometheus/client_python/blob/master/README.md#disabling-_created-metrics.
-
-```
+Since the cleaner has to interact with the Kubernetes API, it needs the following RBAC permissions, if you have RBAC enabled:
 
 ```yaml
----
 kind: ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
@@ -874,93 +604,15 @@ rules:
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list"]
-
----
-kind: ClusterRoleBinding
-apiVersion: rbac.authorization.k8s.io/v1
-metadata:
-  name: local-path-cleaner
-subjects:
-  - kind: ServiceAccount
-    name: local-path-cleaner
-roleRef:
-  kind: ClusterRole
-  name: local-path-cleaner
-  apiGroup: rbac.authorization.k8s.io
-
----
-kind: ServiceAccount
-apiVersion: v1
-metadata:
-  name: local-path-cleaner
 ```
 
----
+## Summary and Conclusion
 
-```bash
-#!/bin/bash
-set -x
-# Get Hostname
-host=$(hostname)
-writer='cast'
+In this post we explored different options to provide ephemeral or semi-persistent local storage to your Kubernetes workload. For most use cases, `emptyDir` volumes should be sufficient and those are the easiest to set up and manage. If you need customizable local storage, consider using `local-path` PVCs managed by the generic ephemeral volume controller to avoid unschedulable pods. If the local storage needs to be semi-persistent, you can use `local-path` PVCs managed by a `StatefulSet` in combination with local path cleaner.
 
-echo "tsc" | sudo tee /sys/devices/system/clocksource/clocksource0/current_clocksource
-sudo mkdir -p /var/lib/kubelet
-sudo tee /var/lib/kubelet/config.json > /dev/null <<EOF
-    {
-      "auths": {
-        "${var.registry_host}": {
-          "auth": "${var.registry_auth}"
-        }
-      }
-    }
-EOF
+In my opinion, managing state on Kubernetes has become a lot easier over the past few years. There are different controllers and mechanisms available to assist you. However, I would not call the problem solved, as there are still some use cases that are not covered by the standard Kubernetes buildings blocks, especially in applications with very specific I/O and operational requirements.
 
-# Doing this to help make debugging easier, startup script logs can be searched by connecting to instance and running.
-# sudo journalctl -u kube-node-installation.service
-lsblk --json
-
-SSDS=($(readlink -f /dev/disk/by-id/google-local-nvme-ssd-*))
-if [ $SSDS == "/dev/disk/by-id/google-local-nvme-ssd-*" ]; then
-  echo No SSD was detected
-  exit 0
-fi
-
-sudo umount "$${SSDS[@]}" 2>/dev/null || true
-
-/usr/bin/yes | sudo mdadm --create /dev/md0 --level=0 --force "--raid-devices=$${#SSDS[@]}" "$${SSDS[@]}" || true
-sudo mkfs.xfs -s size=4096 /dev/md0
-raid_dev_uuid=$(sudo blkid | grep dev/md0 | egrep -o '[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}')
-
-sudo mkdir -p /mnt/disks/ssd-array
-sudo mount -o prjquota /dev/md0 /mnt/disks/ssd-array
-sudo chmod a+w /mnt/disks/ssd-array
-echo "UUID=$raid_dev_uuid /mnt/disks/ssd-array xfs defaults,nofail,noatime,prjquota 0 0" | sudo tee -a /etc/fstab
-
-# Verify the readahead setting...
-read_ahead="$(cat /sys/class/block/md0/queue/read_ahead_kb)"
-if [[ $read_ahead == "8" ]]; then
-  echo "read_ahead set to 8K."
-else
-  echo "Failed to set read_ahead."
-fi
-
-export KUBE_HOME="/home/kubernetes"
-if [[ ! -e "$${KUBE_HOME}/kube-env" ]]; then
-  echo "The $${KUBE_HOME}/kube-env file does not exist!! Terminate cluster initialization."
-  exit 1
-fi
-sed -i 's|readonly NODE_LOCAL_SSDS_EPHEMERAL=true|readonly NODE_LOCAL_SSDS_EPHEMERAL=false|' "$${KUBE_HOME}/kube-env"
-
-#sed -i -E 's/(ephemeral-storage:).*/\1 10Gi/' /home/kubernetes/kubelet-config.yaml
-
-mkdir -p /mnt/disks/ssd-array/lib/kubelet
-mkdir -p /mnt/disks/ssd-array/lib/containerd
-mv /var/lib/kubelet/* /mnt/disks/ssd-array/lib/kubelet
-mv /var/lib/containerd/* /mnt/disks/ssd-array/lib/containerd
-mount --bind /mnt/disks/ssd-array/lib/kubelet /var/lib/kubelet
-mount --bind /mnt/disks/ssd-array/lib/containerd /var/lib/containerd
-```
+Have you used local path provisioner? What is your experience in terms of operability? Let me know in the comments!
 
 ---
 
