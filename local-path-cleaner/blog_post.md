@@ -184,7 +184,11 @@ nodePathMap:
       - /mnt/disks/ssd-array/
 ```
 
-If setup correctly, this should prevent Kubernetes from overcommitting `local-path` PVCs on a node. I admit that this is a bit of a hacky solution with two drawbacks: First, you have to specify the requested storage capacity in two places: In the PVC and in the pod spec. Second, you are repurposing the local ephemeral storage concept, which might cause confusion in larger organizations where many teams share the same multi-tenant Kubernetes cluster.  
+If setup correctly, this should prevent Kubernetes from overcommitting `local-path` PVCs on a node. I admit that this is a bit of a hacky solution with multiple drawbacks: 
+
+- We have to specify the requested storage capacity in two places: In the PVC and in the pod spec.
+- Ephemeral storage usage tracking might be off, causing kubelet to not properly enforce ephemeral storage limits.
+- We are repurposing the local ephemeral storage concept, which might cause confusion in larger organizations where many teams share the same multi-tenant Kubernetes cluster.
 
 If you wanted to avoid overcommitting without ephemeral storage requests, you could try to align CPU and memory requests with the expected storage usage. Either way, once you have the overcommitting problem under control, we can move to enforcing the storage limits.
 
