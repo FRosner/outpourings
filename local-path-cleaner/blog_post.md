@@ -62,7 +62,7 @@ spec:
 
 After creating the `StatefulSet` resource, the following events will unfold:
 
-1. The `StatefulSet` controller processes the first replica, creating the PVC and pod based on the template, setting the owner references, and mounting the PVC in the pod. Both resources will be `Pending`.
+1. The `StatefulSet` controller processes the first replica, creating the PVC and pod based on the template and setting the owner references. The pod will reference the PVC and both resources will be `Pending`.
 2. The PVC control loop detects an unbound PVC, matches the storage class `local-path` to the provisioner `rancher.io/local-path` and triggers dynamic provisioning since no matching PV exists.
 3. Local path provisioner watches PVC events via the Kubernetes API. If the storage class is configured with `volumeBindingMode: WaitForFirstConsumer` (default), it will defer the PV binding to pod scheduling. This is useful because there might be other constraints in your pods such as node selectors, or resource requests, which could result in unschedulable pods if the PV is bound to the wrong node.
 4. The scheduler schedules the pod to a node and the PVC is annotated with `volume.kubernetes.io/selected-node`, indicating the selected node to the PVC binding controller.
@@ -190,7 +190,7 @@ If you wanted to avoid overcommitting without ephemeral storage requests, you co
 
 ## Filesystem Quotas
 
-By default, containers that have a `local-path` PVC mounted, can use as much space in the volume as they want, independently of the space they requested. This can lead to unexpected out of disk errors in the applications. Note that by requested space we are referring to the storage requests of the PVC, not the ephemeral storage requests of the container.
+By default, containers that have a `local-path` PVC mounted, can use as much space in the volume as they want, independently of the space they requested. This can lead to noisy neighbor issues such as unexpected out of disk errors in the applications. Note that by requested space we are referring to the storage requests of the PVC, not the ephemeral storage requests of the container.
 
 Fortunately, filesystems such as XFS support configuring storage quotas. There is an excellent [minimal example](https://github.com/rancher/local-path-provisioner/blob/964c10d96f3098b3d8c0efc9db7e8ad253097ec9/examples/quota/setup#L1-L29) in the local path provisioner repository.
 
@@ -220,7 +220,7 @@ if [ ${type} == 'xfs' ]; then
 fi
 ```
 
-The script first checks if the filesystem is XFS. If not, we simply exit. Then, it reads the project file to determine if there are any existing projects so we can pick the next project ID. Project files look like this:
+The script first checks if the filesystem is XFS. If not, we exit and the PV is created without quotas. Then, it reads the project file to determine if there are any existing projects so we can pick the next project ID. Project files look like this:
 
 ```text
 1:/some/path
@@ -432,7 +432,7 @@ In the end I decided to purge bound local-path PVCs of unschedulable pods aggres
 
 I found that deleting not only the PVC but also the pod reduces the time to recovery, as the managing controller will immediately recreate both the PVC and the pod in that case, triggering the scheduler and subsequently the local-path provisioner to get the pod onto a new node. Let's build the code step by step:
 
-First, we want to list all pending pods. We can use the `list_pod_for_all_namespaces` method with the field selector `status.phase=Pending` for that. Here we can also employ some namespace filtering to only consider pods in namespaces that match a given regular expression.
+First, we want to list all pending pods. We can use the `list_pod_for_all_namespaces` method with the field selector `status.phase=Pending` for that. Here we could also employ some namespace filtering to only consider pods in namespaces that match a given regular expression.
 
 ```python
 def get_pending_pods(v1: CoreV1Api):
@@ -505,7 +505,7 @@ def filter_unschedulable_pods(pods):
     return result
 ```
 
-Now that we know which pods are unschedulable, we need to keep only the ones that have bound PVCs. Unfortunately, this information is not available in the pod resource, so we need to fetch the PVCs, too. Here you can do some namespace filtering again.
+Now that we know which pods are unschedulable, we need to keep only the ones that have bound PVCs. Unfortunately, this information is not available in the pod resource, so we need to fetch the PVCs, too. If you need the ability to filter certain namespaces, you could add that here.
 
 ```python
 def get_bound_local_path_pvcs(v1: CoreV1Api):
