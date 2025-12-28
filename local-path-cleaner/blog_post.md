@@ -1,6 +1,6 @@
 ---
 title: Addressing the Limitations of Local Path Provisioner in Kubernetes
-published: false
+published: true
 description: In this post we will discuss how to manage ephemeral and semi-persistent local storage in Kubernetes by combining different Kubernetes features such as local ephemeral storage, filesystem quotas, and generic ephemeral volumes to address the limitations of local path provisioner.
 tags: kubernetes, cloud, devops, infrastructure
 cover_image: https://dev-to-uploads.s3.amazonaws.com/uploads/articles/3zcyrttro68enzhm57rt.png
