@@ -158,7 +158,7 @@ mkdir -p /mnt/disks/ssd-array/stateful_partition
 mount --bind /mnt/disks/ssd-array/stateful_partition /mnt/stateful_partition
 ```
 
-Alternatively, we could hard code the available ephemeral storage capacity in the kubelet config based on the available space on the RAID0 device. This would allow the scheduler to take storage requests into account for your `local-path` PVs. If you wanted it to be 500Gi, you could run:
+Alternatively, we could hard code the available ephemeral storage capacity in the kubelet config based on the available space on the RAID0 device. While this would allow the scheduler to take storage requests into account for your `local-path` PVs, tracking actual usage will not work. If you wanted it to be 500Gi, you could run:
 
 ```bash
 sed -i -E 's/(ephemeral-storage:).*/\1 500Gi/' /home/kubernetes/kubelet-config.yaml
