@@ -1,5 +1,6 @@
 ## Content
 
+- Taming Prometheus Scrapes - Understanding and Analyzing Your Metrics Endpoints ([Blog Post](https://github.com/FRosner/scrapecli/blob/main/BLOGPOST.md))
 - Catching Race Conditions in Go with `go test -race` ([Blog Post](go-test-race/blog_post.md))
 - Addressing the Limitations of Local Path Provisioner in Kubernetes ([Blog Post](local-path-cleaner/blog_post.md))
 - Investigating Error Logs Using LangGraph, LangChain and Watsonx.ai ([Blog Post](log_investigation/blog_post.md))
