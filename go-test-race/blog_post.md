@@ -1,4 +1,10 @@
-# Catching Race Conditions in Go with `go test -race`
+---
+title: Catching Race Conditions in Go
+published: true
+description: Go's built-in -race flag is one of its most underrated features. Add it to your test command and get instant, precise detection of data races with zero extra tooling. This post walks through how it works, a real example, and how to make it a standard part of your CI pipeline.
+tags: golang, concurrency, testing, ci
+cover_image: https://dev-to-uploads.s3.amazonaws.com/uploads/articles/8fqyaqydb151qjt46j9b.png
+---
 
 ## Introduction
 
@@ -316,6 +322,4 @@ Race conditions are among the hardest bugs to debug: non-deterministic, often in
 
 We've seen how `-race` instruments your code at compile time, reports unsynchronized memory accesses with precise stack traces, and leaves no room for false positives. We've also seen that fixing a detected race is usually straightforward, with `sync.Mutex`, `sync/atomic`, or channels all being idiomatic options depending on the situation.
 
-The cost of enabling it is low: one flag, a slower test run, and nothing more. The benefit is a whole class of concurrency bugs caught automatically, on every PR, before anyone is paged at 3am.
-
-If you're not already running `go test -race ./...` in CI, that's the one takeaway from this post. Add it today.
+The cost of enabling it is low: one flag, a slower test run, and nothing more. The benefit is a whole class of concurrency bugs caught automatically, on every PR, before anyone is paged at 3am. If you're not already running `go test -race ./...` in CI, that's the one takeaway from this post. Add it today.
