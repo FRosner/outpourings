@@ -1,5 +1,6 @@
 ## Content
 
+- Unit Testing Alertmanager Routing and Inhibition Rules ([Blog Post](alertmanager_routing_tests/blog_post.md))
 - Taming Prometheus Scrapes - Understanding and Analyzing Your Metrics Endpoints ([Blog Post](https://github.com/FRosner/scrapecli/blob/main/BLOGPOST.md))
 - Catching Race Conditions in Go with `go test -race` ([Blog Post](go-test-race/blog_post.md))
 - Addressing the Limitations of Local Path Provisioner in Kubernetes ([Blog Post](local-path-cleaner/blog_post.md))
