@@ -42,7 +42,7 @@ The next section is going to give a quick introduction into Kotlin coroutines, i
 
 ## Coroutine Basics
 
-Concurrent programs are hard to reason about. Coroutines are a powerful tool for writing concurrent code. Although other models like promises or callbacks exist they can be quite difficult to understand if they are nested deeply. With coroutines you can write your asynchronous code as it was synchronous and abstract away parts of the concurrency. Let's look at the "Hello World" example in Kotlin provided by the [official documentation](https://kotlinlang.org/docs/reference/coroutines/basics.html):
+Concurrent programs are hard to reason about. Coroutines are a powerful tool for writing concurrent code. Although other models like promises or callbacks exist they can be quite difficult to understand if they are nested deeply. With coroutines you can write your asynchronous code as if it was synchronous and abstract away parts of the concurrency. Let's look at the "Hello World" example in Kotlin provided by the [official documentation](https://kotlinlang.org/docs/reference/coroutines/basics.html):
 
 ```kotlin
 import kotlinx.coroutines.*
@@ -63,7 +63,7 @@ That seems nice but how is that different or better than using good old threads?
 
 ## The Anatomy of a Coroutine
 
-Coroutines logically behave similar to threads but they are implemented differently. In fact a single thread can potentially run thousands of coroutines. This is possible because coroutines can *suspend* their execution, allowing the running thread to move to another coroutine and come back later. This is useful for operations that are waiting for I/O, e.g. network or file access.
+Coroutines behave similar to threads logically but they are implemented differently. In fact a single thread can potentially run thousands of coroutines. This is possible because coroutines can *suspend* their execution, allowing the running thread to move to another coroutine and come back later. This is useful for operations that are waiting for I/O, e.g. network or file access.
 
 Coroutines are implemented as a library rather than a language feature of Kotlin. Only the `suspend` keyword which is used to define suspending functions is part of the language. This enables us to switch to a different implementation for execution if required.
 
@@ -75,7 +75,7 @@ Since the rise of concurrent applications programmers are looking for abstractio
 
 Threads are expensive to create and context switching costs a lot of overhead. Callbacks might produce a Christmas tree of curly braces in your code if chained together. Futures are a nice abstraction in my opinion but require good language support (which also heavily depends on the language or library you are using) and can be difficult to grasp if you are not familiar with functional programming.
 
-In the beginning I mentioned that coroutines allow you to write asynchronous code the same way as you would with synchronous code. What does that mean? Let's look at a simple example:
+In the beginning I mentioned that coroutines allow you to write asynchronous code that is as easy to read as synchronous code. What does that mean? Let's look at a simple example:
 
 ```kotlin
 fun placeOrder(userData: UserData, orderData: OrderData): Order {
