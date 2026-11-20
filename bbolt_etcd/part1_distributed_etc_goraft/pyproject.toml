@@ -1,0 +1,15 @@
+[project]
+name = "etcd-storage-part1"
+version = "0.1.0"
+description = "Animations and scripts for The Evolution of etcd Storage (Part 1: v0.1 - v0.4)"
+authors = [
+    { name = "Frank Rosner", email = "3427394+FRosner@users.noreply.github.com" }
+]
+requires-python = ">=3.9"
+dependencies = [
+    "imageio>=2.37.2",
+    "imageio-ffmpeg>=0.6.0",
+    "matplotlib>=3.9.4",
+    "numpy>=2.0.2",
+    "pillow>=11.3.0",
+]

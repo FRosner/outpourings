@@ -42,189 +42,23 @@ That minimalist design immediately created a coordination problem. Once servers 
 
 To make concrete what a "distributed `/etc`" actually meant in practice—and why its workload shaped `etcd`'s earliest storage engine—let's look at how `etcd` sat at the center of a typical CoreOS cluster.
 
-### High-Level System Design: A 6-Node CoreOS Cluster (3 `etcd` + 3 Workers)
+### Inside a CoreOS Cluster: Bootstrapping Around `etcd`
 
-*(Raw draft notes — to be condensed later)*
+Picture a small CoreOS cluster running a 3-replica `web` service behind an `nginx` reverse proxy on three worker machines, backed by a dedicated `etcd` cluster (three machines so a single crash or reboot doesn't take the store down—we'll unpack how those nodes stay in sync later in this post).
 
-To see what `etcd` actually had to do in 2013–2014, imagine a minimal CoreOS production cluster of **6 machines**: **3 dedicated `etcd` control-plane nodes** and **3 worker nodes** running a stateless 3-replica `web` app (`web@1`, `web@2`, `web@3`) behind a dynamic `nginx` + `confd` load balancer.
+The defining design rule of the early CoreOS stack is **hub-and-spoke coordination**: daemons on worker machines never talk directly to each other. Schedulers do not open RPC connections to worker agents, and update daemons do not gossip. Every component only reads from and writes to `etcd`'s shared directory tree:
 
-- **Why 3 `etcd` nodes instead of running `etcd` on all 6?** Raft needs an odd-sized quorum. Three nodes tolerate 1 node failure while keeping quorum write latency low (and avoiding the replication overhead of a larger consensus group).
-- **The key architectural point:** In the early CoreOS stack, **daemons never talk directly to each other**. `fleetd` engines do not open RPC sockets to `fleetd` agents, and `locksmithd` daemons do not gossip. **`etcd` is both the shared state store and the sole coordination bus for the entire cluster.**
+![How a CoreOS Cluster Bootstraps Around etcd](./coreos_cluster_bootstrap.webp)
 
-```mermaid
-flowchart TB
-    Op["Operator (fleetctl)"]
+Walking through the bootstrap sequence shows how every layer of the cluster maps onto a small branch of that tree:
 
-    subgraph ControlPlane["etcd Quorum Cluster (3 CoreOS Nodes)"]
-        direction LR
-        E1["etcd-1 (Raft Leader) - :4001 client / :7001 peer"]
-        E2["etcd-2 (Follower) - :4001 / :7001"]
-        E3["etcd-3 (Follower) - :4001 / :7001"]
-        E1 <-->|"goraft HTTP :7001 (AppendEntries and Snapshots)"| E2
-        E1 <-->|"goraft HTTP :7001 (AppendEntries and Snapshots)"| E3
-        E2 <-.->|"Raft Elections"| E3
-    end
+1. **Start with an empty `/`:** `etcd` boots first as a shared, hierarchical keyspace—literally a cluster-wide `/etc`.
+2. **Workers join via `fleetd`:** Each CoreOS worker starts `fleetd`, registers a liveness heartbeat under `/_coreos.com/fleet/machines/`, and agrees on a single active scheduler (`/_coreos.com/fleet/lease/engine-leader`, held here by Worker 2).
+3. **An admin deploys services and config:** Using `fleetctl` and `etcdctl` directly against `etcd` (in 2013–2014 `fleetctl` wrote unit definitions straight into `etcd` with no intermediate API server), an admin submits `web@1..3` and `nginx` along with shared application config like `/config/web/rate_limit`. The active `fleetd` scheduler assigns those units to workers, which launch the containers locally.
+4. **Running containers register for discovery:** Once up, each `web` replica publishes its live `IP:port` under `/services/web/`. On Worker 3, `nginx` (driven by a lightweight template helper like `confd`) follows `/services/web/` so traffic routes only to healthy backends.
+5. **OS updates take turns via `locksmithd`:** Every worker also runs `locksmithd`, sharing a reboot semaphore under `/coreos.com/updateengine/rebootlock/semaphore` so automatic A/B OS updates reboot one machine at a time instead of taking the whole cluster offline at once. *(The `etcd` nodes themselves run `locksmithd` in their own one-at-a-time group for the same reason.)*
 
-    subgraph Keyspace["Shared Hierarchical Keyspace in etcd (In-Memory Tree)"]
-        direction LR
-        KLock["/coreos.com/updateengine/rebootlock/semaphore (CAS via prevIndex)"]
-        KFleet["/_coreos.com/fleet/ (CAS+TTL lease, TTL machines, jobs, states)"]
-        KApp["/services/web/* and /config/web/* (TTL and Long-Poll Watch)"]
-    end
-
-    subgraph Workers["3 CoreOS Worker Nodes (Worker 1, Worker 2, Worker 3)"]
-        direction LR
-
-        subgraph W1["Worker 1 (Standby Engine + Agent)"]
-            direction TB
-            F1["fleetd (standby engine + agent)"]
-            L1["locksmithd + update_engine"]
-            S1["systemd: web@1 container"]
-            F1 <-->|"D-Bus"| S1
-            L1 -->|"OS A/B Reboot"| S1
-        end
-
-        subgraph W2["Worker 2 (Active fleetd Engine + Agent)"]
-            direction TB
-            F2["fleetd (active engine lease + agent)"]
-            L2["locksmithd + update_engine"]
-            S2["systemd: web@2 container"]
-            F2 <-->|"D-Bus"| S2
-            L2 -->|"OS A/B Reboot"| S2
-        end
-
-        subgraph W3["Worker 3 (Standby Engine + Agent + Edge Proxy)"]
-            direction TB
-            F3["fleetd (standby engine + agent)"]
-            L3["locksmithd + update_engine"]
-            S3["systemd: web@3 + nginx/confd"]
-            F3 <-->|"D-Bus"| S3
-            L3 -->|"OS A/B Reboot"| S3
-        end
-    end
-
-    Op -->|"Submit unit files (HTTP :4001)"| ControlPlane
-    ControlPlane --- Keyspace
-
-    F1 <-->|"TTL heartbeat, Watch assigned units"| ControlPlane
-    F2 <-->|"CAS+TTL engine lease, TTL heartbeat, Reconcile"| ControlPlane
-    F3 <-->|"TTL heartbeat, Watch assigned units"| ControlPlane
-    L1 <-->|"CAS (prevIndex) acquire/release reboot lock"| ControlPlane
-    L2 <-->|"CAS (prevIndex) retry until lock free"| ControlPlane
-    L3 <-->|"CAS (prevIndex) retry until lock free"| ControlPlane
-    S1 -.->|"TTL register"| ControlPlane
-    S2 -.->|"TTL register"| ControlPlane
-    S3 -.->|"TTL register + Recursive Watch"| ControlPlane
-```
-
-*(Note: Because the 3 `etcd` nodes are also CoreOS Container Linux hosts, they run `locksmithd` too—typically in their own semaphore group with `max = 1` so automatic OS updates never reboot two Raft members simultaneously and lose quorum.)*
-
-#### How the Daemons Interact Through `etcd`
-
-1. **Cluster Scheduling (`fleetd` Engine — CAS + TTL Lease & Reconciliation):**
-   - Every worker runs `fleetd`, which embeds both an *engine* (scheduler) and an *agent* (executor).
-   - To ensure only one scheduler acts at a time, all 3 engines compete for `/_coreos.com/fleet/lease/engine-leader` using **atomic CAS + TTL**. Worker 2 wins the lease and becomes the active engine; Workers 1 and 3 stay standby unless Worker 2's lease expires.
-   - When an operator submits units via `fleetctl`, the unit files are written into `etcd`. The active engine reconciles desired vs. actual state and assigns units to workers by writing target machine IDs back into `etcd`.
-2. **Node Presence & Container Execution (`fleetd` Agents — TTL Heartbeats & Watches):**
-   - All 3 `fleetd` agents periodically refresh a **TTL heartbeat key** (`/_coreos.com/fleet/machines/<id>/object`).
-   - Each agent observes units assigned to its machine ID, starts/stops containers through local `systemd` over D-Bus, and reports unit status back to `etcd`.
-   - If a worker dies or reboots, its heartbeat TTL expires automatically in `etcd`, telling the active `fleetd` engine to reschedule its containers onto a healthy worker.
-3. **Rolling OS Updates (`locksmithd` — Atomic CAS Semaphore):**
-   - CoreOS `update_engine` downloads a new OS image to the passive root partition (A/B update) and notifies `locksmithd` over D-Bus (`UPDATE_STATUS_UPDATED_NEED_REBOOT`).
-   - `locksmithd` reads `/coreos.com/updateengine/rebootlock/semaphore`, decrements the count, adds its machine ID, and writes it back with **`prevIndex` CAS** (intentionally *without* a TTL, so the lock stays held while the machine is powered down; `locksmithd` unlocks itself once it boots back up).
-4. **Service Discovery & Dynamic Config (`web` + `nginx/confd` — Directories, TTLs & Recursive Watches):**
-   - Each `web` replica registers its IP:port under `/services/web/` with a 30-second TTL (refreshed every 15s).
-   - `nginx` + `confd` on Worker 3 holds open a **recursive long-poll watch** (`GET /v2/keys/services/web?wait=true&recursive=true&waitIndex=...`) to regenerate `nginx.conf` and hot-reload whenever backends come or go (or when static config like `/config/web/rate_limit` changes).
-
-#### What the Entire Cluster's State Looks Like in `etcd`
-
-Before any failure or update occurs, the entire 6-node cluster's state is a tiny filesystem-like tree in `etcd`'s RAM:
-
-```text
-/
-├── config/
-│   └── web/
-│       └── rate_limit              = "100rps"          (static config — literal distributed /etc)
-├── services/
-│   └── web/
-│       ├── web@1                   = "10.0.1.1:8080"   (TTL: 30s, running on Worker 1)
-│       ├── web@2                   = "10.0.1.2:8080"   (TTL: 30s, running on Worker 2)
-│       └── web@3                   = "10.0.1.3:8080"   (TTL: 30s, running on Worker 3)
-├── coreos.com/
-│   └── updateengine/
-│       └── rebootlock/
-│           └── semaphore           = '{"semaphore":1,"max":1,"holders":[]}'
-└── _coreos.com/
-    └── fleet/
-        ├── lease/engine-leader     = "worker-2"        (TTL: 15s, CAS lease)
-        ├── machines/worker-1..3    = "{...}"           (TTL: 30s heartbeats)
-        └── job/web@1..3            = "{unit + target}"
-```
-
-Back-of-the-envelope workload tally for this 6-node cluster:
-
-| What's stored in `etcd` | Approximate Keys | Write Pattern |
-| :--- | :---: | :--- |
-| `locksmithd` reboot semaphores | 1–2 keys | Rare (hours/days) |
-| `fleetd` engine lease + 3 machine heartbeats | ~5 keys | Periodic TTL refresh (every ~10–30s) |
-| `fleetd` unit definitions & states | ~10–30 keys | Low churn (deploys & failovers) |
-| App config & service discovery (`/config/*`, `/services/*`) | ~10–30 keys | Periodic TTL heartbeats |
-| **Total working set** | **~30–100 keys (< 1 MB)** | **Single-digit writes/sec** |
-
----
-
-### Scenario: "Tuesday 3:00 AM — An Automatic CoreOS Kernel Patch Lands"
-
-To see *functionally* what `etcd` must guarantee, trace one routine operational event: CoreOS pushes a security update, and all 3 workers finish downloading it to their passive B-partition at roughly the same time.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant L1 as Worker 1 (locksmithd)
-    participant L2 as Worker 2 (locksmithd)
-    participant E as etcd Quorum (3 nodes)
-    participant P as Worker 3 (nginx + confd)
-    participant F as Worker 2 (fleetd Engine)
-
-    Note over P,E: Steady state: confd holds open GET /services/web?wait=true&recursive=true&waitIndex=42
-
-    par Workers race to acquire the reboot semaphore
-        L1->>E: PUT .../semaphore (prevIndex=5, holders=["worker-1"])
-        L2->>E: PUT .../semaphore (prevIndex=5, holders=["worker-2"])
-    end
-    E-->>L1: 200 OK (modifiedIndex=42) - Lock acquired
-    E-->>L2: 412 Compare Failed (5 != 42) - Back off and retry later
-
-    Note over L1: Worker 1 reboots into OS Partition B (stops refreshing TTLs)
-
-    Note over E: 30s later: Leader SyncCommand expires /services/web/web@1 and Worker 1 heartbeat
-    E-->>P: Watch wakes (index=43, action="expire")
-    Note over P: confd removes 10.0.1.1:8080 and reloads nginx (~200ms)
-
-    F->>E: Reschedules web@1 onto Worker 3 (port :8081)
-    Note over E: Worker 3 writes /services/web/web@1 = 10.0.1.3:8081 (index=44) while confd is reloading
-
-    P->>E: GET /services/web?wait=true&recursive=true&waitIndex=44
-    E-->>P: Served immediately from EventHistory ring buffer (index=44)
-    Note over P: confd adds 10.0.1.3:8081 - zero missed updates
-
-    Note over L1: Worker 1 boots back up on patched OS
-    L1->>E: PUT .../semaphore (prevIndex=42, holders=[])
-    E-->>L1: 200 OK - Lock released, Worker 2's turn next
-```
-
-Every step of this 3 AM reboot directly motivates a core functional requirement of `etcd`:
-
-1. **The Reboot Race (Steps 1–2) → Linearizable Strong Consistency + Atomic CAS (`prevIndex`):**
-   Without linearizable compare-and-swap, all 3 workers could reboot simultaneously and take down the entire `web` service. Raft totally orders all mutations so `etcd` accepts Worker 1's `prevIndex=5` write and rejects Worker 2's with `412 Compare Failed`.
-2. **Rebooting/Crashing Without Cleanup (Step 3) → Server-Managed TTLs (`ttlKeyHeap` + `SyncCommand`):**
-   A rebooting (or kernel-panicking) machine cannot be trusted to clean up its own keys. TTLs guarantee that both `/services/web/web@1` and Worker 1's `fleetd` heartbeat automatically disappear after 30 seconds—deterministically across all 3 `etcd` nodes.
-3. **Traffic Drain & Reschedule Race (Steps 4–6) → Push-Style Watches + Short-Term `EventHistory`:**
-   `confd` holds an open recursive long-poll watch on `/services/web` instead of hammering `etcd` with tight polling loops. Crucially, notice the race in Steps 5–6: while `confd` spends ~200ms reloading `nginx` after handling `index=43`, `fleetd` already moves `web@1` onto Worker 3 (`10.0.1.3:8081`) and writes `index=44`. When `confd` reconnects with `waitIndex=44`, it does not miss the new backend *because* `etcd` retains recent mutations in its in-memory `EventHistory` ring buffer.
-4. **When an `etcd` Node Itself Reboots → Replicated Durability, Raft Log & Snapshots:**
-   The 3 `etcd` nodes also patch themselves one by one via `locksmithd` (`max = 1`). While `etcd-2` reboots, `etcd-1` and `etcd-3` maintain a 2-of-3 quorum. When `etcd-2` boots back up with empty RAM, it reloads its latest full-tree JSON snapshot from disk and replays the tail of its Raft log (plus any missed entries from `etcd-1`) to reconstruct the exact in-memory tree.
-
-- **Storage design lesson:** When your entire cluster's working set is ~30–100 keys (< 1 MB), looks like a Unix directory tree, and sees single-digit writes per second, keeping the entire dataset in RAM + an append-only Raft log + periodic JSON snapshots is a completely pragmatic, rational engineering choice.
+Notice the scale of what `etcd` actually holds once the entire cluster is up and running. The animation compresses each unit to a single line (13 keys total); even in a real CoreOS cluster where `fleet` splits each unit across a few internal subkeys (`object`, `target`, `state`), the whole cluster's working set is only dozens of tiny keys, well under 1 MB in total, with a light trickle of periodic heartbeat writes.
 
 ## The `v0.x` Data Model & Coordination Primitives
 
