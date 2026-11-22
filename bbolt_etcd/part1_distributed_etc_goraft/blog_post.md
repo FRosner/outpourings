@@ -42,7 +42,7 @@ That minimalist design immediately created a coordination problem. Once servers 
 
 To make concrete what a "distributed `/etc`" actually meant in practice—and why its workload shaped `etcd`'s earliest storage engine—let's look at how `etcd` sat at the center of a typical CoreOS cluster.
 
-### Inside a CoreOS Cluster: Bootstrapping Around `etcd`
+## Inside a CoreOS Cluster: Bootstrapping Around `etcd`
 
 Picture a small CoreOS cluster running a 3-replica `web` service behind an `nginx` reverse proxy on three worker machines, backed by a dedicated `etcd` cluster (three machines so a single crash or reboot doesn't take the store down—we'll unpack how those nodes stay in sync later in this post).
 
@@ -60,146 +60,475 @@ Walking through the bootstrap sequence shows how every layer of the cluster maps
 
 Notice the scale of what `etcd` actually holds once the entire cluster is up and running. The animation compresses each unit to a single line (13 keys total); even in a real CoreOS cluster where `fleet` splits each unit across a few internal subkeys (`object`, `target`, `state`), the whole cluster's working set is only dozens of tiny keys, well under 1 MB in total, with a light trickle of periodic heartbeat writes.
 
-## The `v0.x` Data Model & Coordination Primitives
+## Storing `/etc` in RAM: Inside `etcd v0.4`'s `store`
 
-TBD — Explain the hierarchical directory/key API over HTTP+JSON and the three primitives that turned `/etc` into a coordination service:
-- **Atomic Compare-and-Swap (`prevValue` / `prevIndex`)**
-- **Per-key TTLs** (ephemeral registrations and heartbeats)
-- **Long-polling HTTP watches** (`?wait=true&waitIndex=...`)
+When an entire cluster's working set fits in a few hundred kilobytes, you do not build an on-disk B+tree or an LSM-tree. Early `etcd` (`v0.1 – v0.4`) had no embedded database engine at all—its primary storage engine was an **in-memory Go directory tree** (`store`), exposed over a simple HTTP+JSON API on port `4001`.
 
-### Concrete Walkthrough: Minimal `etcd v0.4` Config & Tracing the 3 AM Reboot Over `curl`
+Looking directly at `store/store.go` in `etcd v0.4.9`, the entire storage engine is summarized in a single seven-field struct:
 
-*(Raw draft notes — grounded in `~/Documents/etcd` at `v0.4.9` and `~/Documents/locksmith/lock/etcd.go` + `semaphore.go`)*
-
-> **Code archaeology nuance (`locksmith`):** Real `locksmith` (`lock/etcd.go`) uses **CAS (`prevIndex`) *without* a TTL or watch**—deliberately, because a rebooting host must keep holding the semaphore while powered down and unlocks on boot-up (waiting hosts retry with exponential backoff). Pairing `locksmith`'s CAS semaphore with `/services/web/*` service discovery (TTLs + recursive watches) shows all three primitives faithfully.
-
-#### Minimal 3-Node `etcd v0.4` Configuration (`/etc/etcd/etcd.conf`)
-
-In `v0.4`, each control-plane node ran a single static `etcd` binary configured via CLI flags or `/etc/etcd/etcd.conf` (TOML):
-- Port `4001`: Client HTTP+JSON API
-- Port `7001`: Peer-to-peer `goraft` HTTP traffic
-- `data_dir`: Where `goraft` stores `conf`, its append-only `log`, and JSON `snapshot/` files
-- `snapshot_count`: Raft commits between full-tree JSON snapshots (default `10000`)
-
-**`etcd-1` (`10.0.0.1` — bootstraps cluster):**
-```toml
-name = "etcd-1"
-addr = "10.0.0.1:4001"
-bind_addr = "0.0.0.0:4001"
-data_dir = "/var/lib/etcd"
-snapshot = true
-snapshot_count = 10000
-
-[peer]
-addr = "10.0.0.1:7001"
-bind_addr = "0.0.0.0:7001"
+```go
+// store/store.go (etcd v0.4.9)
+type store struct {
+	Root           *node
+	WatcherHub     *watcherHub
+	CurrentIndex   uint64
+	Stats          *Stats
+	CurrentVersion int
+	ttlKeyHeap     *ttlKeyHeap  // need to recovery manually
+	worldLock      sync.RWMutex // stop the world lock
+}
 ```
 
-**`etcd-2` (`10.0.0.2` — joins `etcd-1`; `etcd-3` is identical with `10.0.0.3`):**
-```toml
-name = "etcd-2"
-addr = "10.0.0.2:4001"
-bind_addr = "0.0.0.0:4001"
-data_dir = "/var/lib/etcd"
-peers = ["10.0.0.1:7001"]
-snapshot = true
-snapshot_count = 10000
+Every coordination pattern from our CoreOS bootstrap walkthrough maps cleanly onto one of those fields:
 
-[peer]
-addr = "10.0.0.2:7001"
-bind_addr = "0.0.0.0:7001"
+| CoreOS Cluster Need | HTTP+JSON Primitive | Backing In-Memory Structure |
+| :--- | :--- | :--- |
+| Hierarchical `/etc` paths (`fleet`, `/config/*`) | Directory / leaf CRUD | `Root *node` tree (`Children map[string]*node`) |
+| Mutual exclusion (`locksmithd` semaphore, `fleetd` leader lease) | Atomic CAS (`prevIndex` / `prevValue`) | Monotonic `CurrentIndex` + `worldLock` |
+| Ephemeral liveness (`fleetd` heartbeats, `web@1..3` registration) | Per-key TTLs (`ttl=30`) | `ttlKeyHeap` min-heap |
+| Reactive config (`nginx`/`confd` following `/services/web/`) | Long-polling watches (`?wait=true`) | `WatcherHub` + 1,000-slot `EventHistory` ring buffer |
+
+Let's unpack each of those four pieces in code.
+
+### The Directory Tree, `worldLock`, and Atomic CAS
+
+At the root of the store sits a Unix-like tree of `node` structs (`store/node.go`):
+
+```go
+// store/node.go (etcd v0.4.9)
+type node struct {
+	Path string
+
+	CreatedIndex  uint64
+	ModifiedIndex uint64
+
+	Parent *node `json:"-"` // should not encode this field! avoid circular dependency.
+
+	ExpireTime time.Time
+	ACL        string
+	Value      string           // for key-value pair
+	Children   map[string]*node // for directory
+
+	store *store
+}
 ```
 
-On disk, `/var/lib/etcd/` only contained:
+A node is either a **leaf** (holding a `Value` string with `Children == nil`) or a **directory** (holding a `Children map[string]*node` keyed by path segment). In memory, our CoreOS cluster's keyspace looks like a nested web of Go structs and hash maps:
+
+```text
+store.Root (dir "/")
+├── "_coreos.com" ──► "fleet" ──► "machines" ──► ...
+├── "config"      ──► "web"   ──► "rate_limit" ("1000")
+├── "coreos.com"  ──► "updateengine" ──► "rebootlock" ──► "semaphore" (idx: 5)
+└── "services"    ──► "web"   ──► "web@1" ("10.0.1.1:8080", ExpireTime: +30s) ◄──┐
+                                                                                 │
+store.ttlKeyHeap.array[0] ───────────────────────────────────────────────────────┘
+```
+
+Reading `/services/web/web@1` acquires `worldLock.RLock()`, splits the path, and walks `Root.Children["services"].Children["web"].Children["web@1"]`. Every mutation acquires the exclusive `worldLock.Lock()`—literally commented `// stop the world lock` in the source—bumps the store's global monotonic `CurrentIndex`, and stamps the affected node's `ModifiedIndex`.
+
+That single global lock and monotonic index make **Compare-and-Swap (CAS)** trivial. Take `locksmithd` coordinating a 3 AM OS reboot on Worker 1. First, `locksmithd` reads `/coreos.com/updateengine/rebootlock/semaphore` and observes `modifiedIndex: 5`. To claim the reboot slot, it submits a conditional `PUT` with `prevIndex=5`:
+
+```bash
+curl -X PUT http://10.0.0.1:4001/v2/keys/coreos.com/updateengine/rebootlock/semaphore \
+  -d prevIndex=5 \
+  -d value='{"semaphore":0,"max":1,"holders":["worker-1"]}'
+```
+
+*(Code archaeology note from `coreos/locksmith`: `locksmith` deliberately acquires this semaphore with `prevIndex` **without** a TTL or watch. A rebooting host must keep holding the slot while powered off and only releases it via another CAS after booting back up; other hosts retry with exponential backoff.)*
+
+Inside `store.CompareAndSwap` (`store/store.go`), the check-and-update executes atomically under `worldLock`:
+
+```go
+// store/store.go (etcd v0.4.9, trimmed)
+func (s *store) CompareAndSwap(nodePath, prevValue string, prevIndex uint64,
+	value string, expireTime time.Time) (*Event, error) {
+
+	s.worldLock.Lock()
+	defer s.worldLock.Unlock()
+
+	n, err := s.internalGet(nodePath)
+	if err != nil {
+		return nil, err
+	}
+	if ok, which := n.Compare(prevValue, prevIndex); !ok {
+		cause := getCompareFailCause(n, which, prevValue, prevIndex)
+		return nil, etcdErr.NewError(etcdErr.EcodeTestFailed, cause, s.CurrentIndex)
+	}
+
+	s.CurrentIndex++
+	// ... record Event with PrevNode ...
+	n.Write(value, s.CurrentIndex)
+	n.UpdateTTL(expireTime)
+	s.WatcherHub.notify(e)
+	return e, nil
+}
+```
+
+If Worker 1 and Worker 2 both race with `prevIndex=5`, whichever request arrives first advances the node to `modifiedIndex: 42`. The second request fails `n.Compare` and receives `101: Compare failed ([5 != 42])`.
+
+### Ephemeral Keys and `ttlKeyHeap`
+
+Unlike the reboot semaphore, service registrations and machine heartbeats *must* vanish automatically if a worker crashes. When `web@1` comes up on Worker 1, it registers an ephemeral key with a 30-second TTL:
+
+```bash
+curl -X PUT http://10.0.0.1:4001/v2/keys/services/web/web@1 \
+  -d value="10.0.1.1:8080" \
+  -d ttl=30
+```
+
+When `store` inserts `/services/web/web@1` (auto-creating `/services` and `/services/web` along the way), it sees a non-zero `ExpireTime` and registers the `*node` pointer in `ttlKeyHeap` (`store/ttl_key_heap.go`). Rather than keeping a bare slice or scanning every key in the tree to find expired ones, `ttlKeyHeap` implements Go's standard library `container/heap.Interface` (`Len`, `Less`, `Swap`, `Push`, `Pop`):
+
+```go
+// store/ttl_key_heap.go (etcd v0.4.9, trimmed)
+type ttlKeyHeap struct {
+	array  []*node
+	keyMap map[*node]int
+}
+
+func (h ttlKeyHeap) Len() int {
+	return len(h.array)
+}
+
+func (h ttlKeyHeap) Less(i, j int) bool {
+	return h.array[i].ExpireTime.Before(h.array[j].ExpireTime)
+}
+
+func (h ttlKeyHeap) Swap(i, j int) {
+	h.array[i], h.array[j] = h.array[j], h.array[i]
+
+	// Keep each node's current slice index up to date
+	h.keyMap[h.array[i]] = i
+	h.keyMap[h.array[j]] = j
+}
+
+func (h *ttlKeyHeap) Push(x interface{}) {
+	n, _ := x.(*node)
+	h.keyMap[n] = len(h.array)
+	h.array = append(h.array, n)
+}
+
+func (h *ttlKeyHeap) Pop() interface{} {
+	old := h.array
+	n := len(old)
+	x := old[n-1]
+	h.array = old[0 : n-1]
+	delete(h.keyMap, x)
+	return x
+}
+
+func (h *ttlKeyHeap) update(n *node) {
+	if index, ok := h.keyMap[n]; ok {
+		heap.Remove(h, index)
+		heap.Push(h, n)
+	}
+}
+```
+
+Two details explain how this data structure works:
+
+1. **Ordering `array` by `ExpireTime` so `array[0]` always expires first:** Go's `container/heap` treats the flat slice `array` as an implicit binary tree where the children of index `i` sit at `2*i + 1` and `2*i + 2`. Whenever `etcd` inserts or removes a node via `heap.Push` / `heap.Pop`, `container/heap` calls `Less(i, j)`—comparing `ExpireTime` on the `*node` pointers—and swaps elements up or down a single root-to-leaf path (`O(log N)`) to preserve the min-heap invariant: every parent expires earlier than both of its children. As a result, the soonest-to-expire key always sits at the root (`array[0]`), so checking whether anything is due to expire is an `O(1)` peek.
+2. **Tracking positions with `keyMap` for heartbeat refreshes and early deletes:** A plain binary heap only knows where the *earliest* element sits (`array[0]`). When `web@1` refreshes its 30-second heartbeat (`UpdateTTL`) or gets deleted manually, `store` finds the `*node` via the directory tree—not the heap—so it has no idea which slot `i` in `array` that node currently occupies. Because `Push`, `Pop`, and `Swap` keep `keyMap[node] = i` synchronized on every move, `update(n)` and `remove(n)` find the node's slice index in `O(1)` and rebalance via `heap.Remove` / `heap.Push` in `O(log N)` instead of linearly scanning the entire slice.
+
+Expiring overdue keys is then a tight loop in `store.DeleteExpiredKeys(cutoff time.Time)`:
+
+```go
+// store/store.go (etcd v0.4.9, trimmed)
+func (s *store) DeleteExpiredKeys(cutoff time.Time) {
+	s.worldLock.Lock()
+	defer s.worldLock.Unlock()
+
+	for {
+		node := s.ttlKeyHeap.top()
+		if node == nil || node.ExpireTime.After(cutoff) {
+			break
+		}
+
+		s.CurrentIndex++
+		e := newEvent(Expire, node.Path, s.CurrentIndex, node.CreatedIndex)
+		e.PrevNode = node.Repr(false, false)
+
+		s.ttlKeyHeap.pop()
+		node.Remove(true, true, func(path string) {
+			s.WatcherHub.notifyWatchers(e, path, true)
+		})
+		s.WatcherHub.notify(e)
+	}
+}
+```
+
+> **TODO — Animation 1 (`ttl_key_heap.webp`):**
+> *Show `ttlKeyHeap` simultaneously as its logical binary tree, its flat `array []*node` slice, and its `keyMap map[*node]int` lookup table, stepping through three operations:*
+> 1. **Insert (`heap.Push`):** *Register `web@2 (t+20s)`, `fleet-w1 (t+15s)`, and `web@1 (t+10s)`; animate `web@1` appending to the end of `array` and sifting up via `Less` + `Swap` to `array[0]` while `keyMap` updates each swapped node's index.*
+> 2. **Heartbeat refresh (`update`):** *`web@1` refreshes its TTL to `t+40s`; highlight the `O(1)` lookup `keyMap[web@1] → 0`, remove and re-push `web@1` so `fleet-w1 (t+15s)` bubbles to `array[0]` and `web@1` sinks to a leaf.*
+> 3. **Expiration (`DeleteExpiredKeys(cutoff)`):** *Advance a `cutoff` clock past `t+15s`; `top()` peeks `array[0]`, confirms `ExpireTime <= cutoff`, pops `fleet-w1` (sifting `web@2` up to `array[0]`), removes `fleet-w1` from the directory tree, and stops as soon as `array[0].ExpireTime > cutoff`.*
+
+Notice something subtle about `DeleteExpiredKeys`'s signature: it does **not** call `time.Now()` itself—it takes an explicit `cutoff time.Time` parameter. If three `etcd` nodes expired keys using their own local wall clocks, clock skew would cause them to expire keys at different points relative to incoming writes, diverging their trees and `CurrentIndex` values. We'll see in the next section how `etcd` solves this through Raft.
+
+### Long-Polling Watches: `WatcherHub` and the `EventHistory` Ring Buffer
+
+On Worker 3, `nginx` (driven by a template helper like `confd`) needs to learn immediately when `/services/web/web@1` disappears during Worker 1's reboot—without polling `etcd` in a tight loop. In `v0.4`, watches were implemented as **HTTP long-polling ("hanging GET")** requests:
+
+```bash
+curl "http://10.0.0.1:4001/v2/keys/services/web?wait=true&recursive=true&waitIndex=42"
+```
+
+Inside `store`, watches are managed by `watcherHub` (`store/watcher_hub.go`):
+
+```go
+// store/watcher_hub.go (etcd v0.4.9)
+type watcherHub struct {
+	mutex        sync.Mutex
+	watchers     map[string]*list.List
+	count        int64
+	EventHistory *EventHistory
+}
+```
+
+When no matching change has happened yet, `watcherHub.watch()` allocates a buffered `EventChan` and parks the watcher in `watchers["/services/web"]`, leaving the HTTP request open. Thirty seconds after Worker 1 powers down for its OS update, `DeleteExpiredKeys` pops `web@1` at `CurrentIndex = 43` and calls `WatcherHub.notify(e)`. `notify` splits `e.Node.Key` (`/services/web/web@1`) on `"/"` and walks every ancestor prefix—`/`, `/services`, `/services/web`, `/services/web/web@1`—waking `confd`'s hanging GET with a JSON response:
+
+```json
+{
+  "action": "expire",
+  "node": { "key": "/services/web/web@1", "modifiedIndex": 43 },
+  "prevNode": { "key": "/services/web/web@1", "value": "10.0.1.1:8080" }
+}
+```
+
+Because each HTTP long-poll delivers only a **single** event and closes the connection, there is an inherent gap while `confd` reloads `nginx` and opens its next `?wait=true` request. During that exact window, `fleetd` reschedules `web@1` onto Worker 3 (`10.0.1.3:8081`, `CurrentIndex = 44`). If `etcd` only notified live watchers, `confd` would miss index `44`.
+
+To bridge that gap, `watcherHub` maintains `EventHistory` (`store/event_history.go` + `store/event_queue.go`)—an in-memory **fixed-size ring buffer** initialized to **1,000 events** (`newWatchHub(1000)` in `store/store.go`):
+
+```go
+// store/event_history.go & store/event_queue.go (etcd v0.4.9)
+type EventHistory struct {
+	Queue      eventQueue
+	StartIndex uint64
+	LastIndex  uint64
+	rwl        sync.RWMutex
+}
+
+type eventQueue struct {
+	Events   []*Event
+	Size     int
+	Front    int
+	Back     int
+	Capacity int // hardcoded to 1000 in newStore()
+}
+```
+
+When `confd` reconnects with `?wait=true&recursive=true&waitIndex=44`, `EventHistory.scan()` checks the ring buffer before parking the request:
+
+1. **Future index (`waitIndex > LastIndex`):** Nothing to replay yet; park the watcher in `watchers["/services/web"]`.
+2. **In-window index (`StartIndex <= waitIndex <= LastIndex`):** Jump directly to `(Queue.Front + int(waitIndex - StartIndex)) % 1000` and scan forward for the first matching event—immediately returning index `44` so `confd` catches up without missing a beat.
+3. **Evicted index (`waitIndex < StartIndex`):** Over 1,000 mutations have occurred since the watcher last checked in, overwriting its slot in the ring buffer. `scan()` aborts with error `401` (`EcodeEventIndexCleared`: *"The event in requested index is outdated and cleared"*), forcing the client to do a full recursive `GET` to re-sync.
+
+> **TODO — Animation 2 (`event_history_ring_buffer.webp`):**
+> *Visualize `EventHistory` as a circular 1,000-slot ring buffer with `Front` (`StartIndex`) and `Back` (`LastIndex`) pointers:*
+> 1. *Steady state: mutations advance `CurrentIndex` (42 → 43 → 44), writing `Event` pointers into consecutive slots.*
+> 2. *Fast catch-up: `confd` wakes on index 43, reloads `nginx` while index 44 lands, reconnects with `waitIndex=44`, and `EventHistory.scan()` hits index 44 inside the active window.*
+> 3. *Write-burst eviction: a sudden burst of >1,000 writes wraps `Back` around the ring, pushing `StartIndex` past a slow watcher's `waitIndex` and triggering `401 EcodeEventIndexCleared`.*
+
+Looking at the source comment right above `newWatchHub` in `store/watcher_hub.go` reveals the exact 2013 workload assumption baked into that number:
+
+```go
+// Typically, we only need to keep a small size of history[smaller than 20K].
+// Ideally, it should smaller than 20K/s[max throughput] * 2 * 50ms[RTT] = 2000
+```
+
+For a quiet CoreOS cluster with dozens of keys and light heartbeat traffic, 1,000 events could cover minutes of history. Under a busy cluster, it would evaporate in milliseconds.
+
+---
+
+Pause and notice what we have built so far: a fast, clean, self-contained in-memory directory tree—sitting entirely inside volatile Go heap memory on a single machine. That immediately raises two questions we cannot put off any longer:
+
+1. **Durability:** If `etcd-1` crashes or takes its turn rebooting under `locksmithd`, how does the tree survive?
+2. **Consistency:** With three `etcd` nodes running concurrently, how do they agree on who won `locksmithd`'s CAS, keep `CurrentIndex` identical, and expire TTLs at the exact same moment?
+
+## Making RAM Durable and Replicated: `goraft`, the Command Log, and JSON Snapshots
+
+In `etcd v0.1 – v0.4`, durability and replication were not two separate layers—**Raft was the on-disk storage layer.** Specifically, early `etcd` embedded Ben Johnson's [`github.com/goraft/raft`](https://github.com/goraft/raft), one of the very first Go implementations of the [Raft consensus algorithm](https://raft.github.io/).
+
+We won't detour into Raft's leader-election proofs or term safety here (for an interactive walkthrough of those mechanics, see [The Secret Lives of Data](https://thesecretlivesofdata.com/raft/)). For understanding `etcd`'s storage evolution, only one mental model matters: the **Replicated State Machine (RSM)**.
+
+Every `etcd` node runs the exact same deterministic in-memory `store` we just inspected. Rather than replicating raw memory pages or key-value snapshots on every write, Raft replicates an **ordered, append-only log of commands** across the three nodes:
+
+```text
+  Client (:4001)
+        │  PUT /v2/keys/... (CAS / TTL)
+        ▼
+  ┌───────────────────────────────────────────────────────────┐
+  │ etcd-1 (goraft Leader)                                    │
+  │  1. Append command to local disk: /var/lib/etcd/log       │
+  │  2. Replicate via AppendEntries HTTP (:7001) to peers     ├────► etcd-2 (Follower): append log ──► apply to store
+  │  3. Quorum (2/3) persisted → commit & apply to RAM store  ├────► etcd-3 (Follower): append log ──► apply to store
+  │  4. Wake WatcherHub & reply HTTP 200 to client            │
+  └───────────────────────────────────────────────────────────┘
+```
+
+If every node starts from the same empty `/` and applies the same committed log of commands in the same order, every node arrives at the exact same in-memory tree, the exact same `CurrentIndex`, and the exact same CAS winners. And if a node reboots, it recovers its RAM state from disk.
+
+That is why `/var/lib/etcd/` in `etcd v0.4` had such a remarkably sparse on-disk layout—no database files, no page caches, no indexes, just three things:
+
 ```text
 /var/lib/etcd/
-├── conf          # Raft peer metadata
-├── log           # Append-only Raft command log
-└── snapshot/     # Periodic full-tree JSON dumps
+├── conf                  # Raft peer configuration metadata
+├── log                   # Single append-only Raft command log
+└── snapshot/
+    └── <term>_<index>.ss # Periodic CRC32-prefixed JSON dump of the entire store
 ```
 
-#### Concrete HTTP+JSON (`curl`) Interactions From the 3 AM Reboot
+### Tracing Writes and Deterministic TTLs Through `goraft`
 
-1. **Ephemeral service registration (Tree + `ttlKeyHeap`):**
-   ```bash
-   curl -X PUT http://10.0.0.1:4001/v2/keys/services/web/web@1 \
-     -d value="10.0.1.1:8080" \
-     -d ttl=30
-   ```
-   *Under the hood:* `goraft` commits a `Set` command → `store` auto-creates `/services` and `/services/web`, inserts leaf `web@1`, pushes it onto `ttlKeyHeap`, and appends an `Event` to `EventHistory`.
+Follow `locksmithd`'s CAS request from earlier all the way through `goraft`:
 
-2. **`nginx`/`confd` opens a recursive long-poll watch (`WatcherHub` + `EventHistory`):**
-   ```bash
-   curl "http://10.0.0.1:4001/v2/keys/services/web?wait=true&recursive=true&waitIndex=42"
-   # HTTP connection stays parked in WatcherHub.watchers["/services/web"]
-   ```
+1. Worker 1 sends `PUT /v2/keys/coreos.com/updateengine/rebootlock/semaphore?prevIndex=5` to port `4001`. (If it hits a follower, `etcd` redirects or proxies the write to the leader.)
+2. The leader wraps the request in a `CompareAndSwapCommand` (`etcd:compareAndSwap`) and passes it to `raftServer.Do(cmd)`.
+3. Inside `goraft`'s `leaderLoop`, `processCommand` creates a `LogEntry`, encodes the JSON command into the local `/var/lib/etcd/log` file, and waits for peer heartbeat goroutines to replicate the entry over port `7001` via `AppendEntries`.
+4. Once a majority (2 of 3 nodes) has written the entry to its `log`, the leader advances `commitIndex`. On each node, `Log.setCommitIndex()` decodes the command and invokes `ApplyFunc` → `CompareAndSwapCommand.Apply()` → `store.CompareAndSwap(...)`.
+5. Only after `store.CompareAndSwap` updates the tree and wakes `WatcherHub` does the leader return HTTP `200 OK` (with `modifiedIndex: 42`) to Worker 1. If Worker 2 concurrently sent `prevIndex=5`, its command lands at a later log index, applies after Worker 1's, and deterministically fails with `101: Compare failed` on every replica.
 
-3. **Worker 1 acquires the `locksmith` reboot semaphore (Atomic CAS via `prevIndex`):**
-   After reading `/v2/keys/coreos.com/updateengine/rebootlock/semaphore` (`modifiedIndex: 5`):
-   ```bash
-   curl -X PUT http://10.0.0.1:4001/v2/keys/coreos.com/updateengine/rebootlock/semaphore \
-     -d prevIndex=5 \
-     -d value='{"semaphore":0,"max":1,"holders":["worker-1"]}'
-   ```
-   If Worker 2 races with `prevIndex=5`, Raft serializes both: Worker 1 succeeds (`modifiedIndex: 42`) and Worker 2 gets `101: Compare failed ([5 != 42])`.
+This same command-log mechanism answers our cliffhanger from the previous section: **how do three independent nodes expire TTLs deterministically without trusting local wall clocks?**
 
-4. **Worker 1 reboots → TTL expires → Watcher fires:**
-   30s after Worker 1 stops heartbeating, the Raft leader's 500ms `SyncCommand(now)` commits → `store.DeleteExpiredKeys(now)` pops `web@1` off `ttlKeyHeap`, increments `CurrentIndex` to `43`, records an `expire` event in `EventHistory`, and walks `/services/web/web@1` → `/services/web` → `/` to wake `confd`'s hanging `GET`:
-   ```json
-   {
-     "action": "expire",
-     "node": { "key": "/services/web/web@1", "modifiedIndex": 43 },
-     "prevNode": { "key": "/services/web/web@1", "value": "10.0.1.1:8080" }
+In `server/peer_server.go`, the Raft leader runs a 500 ms background ticker (`monitorSync`) that proposes a `SyncCommand` carrying the *leader's* timestamp right into the Raft log:
+
+```go
+// server/peer_server.go (etcd v0.4.9)
+func (s *PeerServer) monitorSync() {
+	ticker := time.NewTicker(time.Millisecond * 500)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.closeChan:
+			return
+		case now := <-ticker.C:
+			if s.raftServer.State() == raft.Leader {
+				s.raftServer.Do(s.store.CommandFactory().CreateSyncCommand(now))
+			}
+		}
+	}
+}
+```
+
+When each replica commits and applies that `etcd:sync` log entry (`store/v2/sync_command.go`), it passes the leader's serialized `c.Time` straight into `s.DeleteExpiredKeys(c.Time)`. Every node pops the exact same expired nodes from its `ttlKeyHeap` at the exact same point in the log, bumping `CurrentIndex` identically.
+
+Notice the subtle storage side effect: **even a completely idle `etcd v0.4` cluster writes two `etcd:sync` commands per second into the Raft log**—roughly 172,800 log entries per day.
+
+> **TODO — Animation 3 (`goraft_write_and_sync.webp`):**
+> *Show the 3-node `etcd` cluster (`etcd-1` leader, `etcd-2` and `etcd-3` followers), each displaying its on-disk `/var/lib/etcd/log`, its in-memory `store` (`semaphore`, `web@1`, `CurrentIndex`), and a slightly skewed local wall clock (`12:00:31`, `12:00:29`, `12:00:32`):*
+> 1. **Competing CAS serialization:** *Worker 1 and Worker 2 both send `PUT .../semaphore?prevIndex=5`. The leader appends both `etcd:compareAndSwap` commands to its `log`, replicates them over `:7001` (`AppendEntries`) until a quorum (2/3) persists them, and commits. All three nodes apply in identical order: Worker 1 wins (`modifiedIndex: 42`, HTTP `200`), while Worker 2 deterministically hits `101: Compare failed`.*
+> 2. **Deterministic TTL expiration (`SyncCommand`):** *Even though `etcd-2`'s local clock still reads `12:00:29` (before `web@1`'s `12:00:30` expiry), the leader's 500 ms ticker appends `etcd:sync(12:00:31)` to the Raft log. Once committed, all three replicas pass `12:00:31` into `DeleteExpiredKeys` and expire `web@1` at the exact same log position, advancing `CurrentIndex` to `43` in lockstep.*
+
+### Log Compaction and Full-Tree JSON Snapshots
+
+An append-only command log cannot grow forever. Without compaction, `/var/lib/etcd/log` would eventually fill the disk—and restarting a node would mean replaying millions of historical mutations from index 1 just to reconstruct a 50 KB tree.
+
+Raft solves unbounded log growth with **snapshotting**: periodically capture the entire state machine's current state to disk at some committed log index `L`, then discard all log entries up to `L`.
+
+In `etcd v0.4.9`, `PeerServer.monitorSnapshot()` (`server/peer_server.go`) wakes up every 3 seconds and checks whether `CommitIndex - lastSnapshotIndex` exceeds `snapshot_count` (default **`10000`** entries—which, thanks to the 500 ms `SyncCommand`, happens at least every ~83 minutes even with zero user writes). When it crosses that threshold, it calls `raftServer.TakeSnapshot()`:
+
+1. **Stop-the-world clone + JSON serialization (`store.Save()`):**
+   `goraft` asks the state machine (`store`) to serialize itself:
+
+   ```go
+   // store/store.go (etcd v0.4.9)
+   func (s *store) Save() ([]byte, error) {
+   	s.worldLock.Lock()
+
+   	clonedStore := newStore()
+   	clonedStore.CurrentIndex = s.CurrentIndex
+   	clonedStore.Root = s.Root.Clone()
+   	clonedStore.WatcherHub = s.WatcherHub.clone()
+   	clonedStore.Stats = s.Stats.clone()
+   	clonedStore.CurrentVersion = s.CurrentVersion
+
+   	s.worldLock.Unlock()
+
+   	b, err := json.Marshal(clonedStore)
+   	if err != nil {
+   		return nil, err
+   	}
+   	return b, nil
    }
    ```
-   While `confd` reloads `nginx`, `fleetd` reschedules `web@1` onto Worker 3 (`10.0.1.3:8081`, `index: 44`). When `confd` reconnects with `?wait=true&recursive=true&waitIndex=44`, `EventHistory.scan()` serves `index: 44` immediately from the 1,000-slot ring buffer.
 
-5. **Worker 1 finishes booting → releases the lock via CAS (`prevIndex=42`):**
-   ```bash
-   curl -X PUT http://10.0.0.1:4001/v2/keys/coreos.com/updateengine/rebootlock/semaphore \
-     -d prevIndex=42 \
-     -d value='{"semaphore":1,"max":1,"holders":[]}'
+   Look closely at what happens here. To avoid holding `worldLock` during slow JSON encoding, `store.Save()` first takes the **exclusive `worldLock.Lock()`**—blocking every read and write—and performs a **full recursive deep copy** of all `N` nodes in `Root.Clone()`, plus `EventHistory` and `Stats`. Only after allocating a second copy of the entire keyspace in RAM does it release `worldLock` and run `json.Marshal(clonedStore)` over the clone.
+
+2. **Double-encoded snapshot file (`goraft/raft/snapshot.go`):**
+   `goraft`'s `Snapshot.save()` wraps those `state` JSON bytes inside an outer `Snapshot{LastIndex, LastTerm, Peers, State}` struct, runs `json.Marshal(ss)` a *second* time (which base64-encodes `State []byte` inside the outer JSON envelope!), writes an 8-character CRC32 checksum followed by the payload to `snapshot/<term>_<index>.ss`, calls `file.Sync()`, and deletes the previous snapshot file:
+
+   ```text
+   # /var/lib/etcd/snapshot/1_10001.ss
+   a3f9c210                                           ◄── 8-char IEEE CRC32 checksum
+   {
+     "lastIndex": 10001, "lastTerm": 1,
+     "peers": [{"name": "etcd-1", "connectionString": "http://10.0.0.1:7001"}, ...],
+     "state": "eyJSb290Ijp7IlBhdGgiOiIvIiwiQ2hpbGRyZW4iOnsi..."  ◄── base64(json(store))
+   }
    ```
 
-## Under the Hood: `etcd v0.4` & `goraft` (Source-Code Archaeology)
+3. **Log rewrite and truncation (`goraft/raft/log.go`):**
+   With the snapshot safely synced, `goraft` keeps a 200-entry safety tail (`NumberOfLogEntriesAfterSnapshot = 200`) so slightly lagging followers can still catch up via `AppendEntries` instead of transferring a full snapshot. It calls `s.log.compact()`, which locks `Log.mutex`, writes those surviving tail entries into `log.new`, calls `file.Sync()`, and atomically `os.Rename`s `log.new` over `log`.
 
-TBD — Trace the end-to-end write/read/watch lifecycle using the exact operations above: Client HTTP (`:4001`) → `goraft` Leader → Raft `log` append & quorum replication (`:7001`) → apply to in-memory `store` (behind `worldLock`) → wake watchers / record in `EventHistory` → periodic JSON snapshot (`monitorSnapshot` every 3s, default `SnapshotCount = 10000`).
+4. **Crash recovery (`store.Recovery()`):**
+   When a node restarts, it reads the latest `<term>_<index>.ss` file, `json.Unmarshal`s the tree back into RAM, walks every node via `Root.recoverAndclean()` to reconstruct the fields that JSON could not encode (`Parent` pointers marked `json:"-"` and the unexported `ttlKeyHeap`), and replays whatever entries remain in `/var/lib/etcd/log`.
 
-*(Verified `v0.4.9` details to highlight below: `store.worldLock sync.RWMutex`, leader `monitorSync()` proposing `SyncCommand(now)` every 500ms through Raft for deterministic TTL expiration via `DeleteExpiredKeys(cutoff)`, `EventHistory` fixed 1,000-slot ring buffer returning `EcodeEventIndexCleared` / `401` on overflow, and `store.Save()` taking `worldLock` to deep-clone `Root` + `EventHistory` + `Stats` before `json.Marshal`.)*
-
-### The In-Memory `store` Tree
-
-TBD — Inspect actual Go structs in `~/Documents/etcd` at a `v0.4.x` tag:
-- Hierarchical `node` / directory maps, leaf values, global `currentIndex`, TTL expiration tracking (`ttlKeyHeap` / expiration handling), and locking around reads/writes.
-
-### Watch History (`EventHistory` Ring Buffer)
-
-TBD — Inspect how `EventHistory` maintains a fixed-size in-memory sliding window of recent events so long-polling watchers can catch up from a given `waitIndex`—and what happens when write bursts overflow that window.
-
-TBD — **Animation 1 (Python / `matplotlib` → `.webp`):** *`EventHistory` Ring Buffer & Long-Poll Watches* — visualize writes advancing `currentIndex` and populating the fixed-size ring buffer, a watcher catching up via `waitIndex`, and a slow watcher getting evicted under a write burst.
-
-### Durability & Log Compaction: Raft Command Log + Full-Tree JSON Snapshots
-
-TBD — Explain why an append-only Raft command log cannot grow unboundedly, and inspect `store.Save()` / `SaveNoCopy()` in `etcd v0.4` to show how snapshotting walked the entire Go tree, serialized it to JSON on disk, and truncated the Raft log.
-
-TBD — **Animation 2 (Python / `matplotlib` → `.webp`):** *The Write, Raft Log & Full-Tree JSON Snapshot Lifecycle* — visualize mutations appending to the Raft log and updating the in-memory tree, followed by a snapshot cycle traversing all `N` nodes to serialize JSON and compact the log.
+Every step of that pipeline is dead simple to reason about—and scales strictly as **`O(N)` in the total size of the tree**, in RAM, CPU, and disk I/O.
 
 ## Mini-Experiment: Measuring the Cost of an In-Memory JSON-Snapshotted Tree
 
-TBD — Reproducible Go benchmark (either exercising historical `etcd v0.4` `store` code directly or a faithful standalone Go harness mirroring its exact structs) scaling from e.g. 1k → 10k → 100k keys to measure:
-- **Memory overhead:** Go heap footprint of pointer-heavy directory/node structs vs. raw key/value bytes.
-- **Snapshot cost:** Latency, CPU, and allocation spikes of `O(N)` JSON serialization as tree size grows.
-
-Connect the measurements back to fundamental storage trade-offs: blazing-fast point reads and simple crash recovery at 2013 config scale, with steep scaling cliffs waiting once datasets grow.
+> **TODO — Reproducible Go Benchmark (`bench_v04_store/`):**
+> Build a standalone Go benchmark mirroring `etcd v0.4.9`'s exact `store`, `node`, `ttlKeyHeap`, and `Save()` (`Root.Clone()` + `json.Marshal`) structs—or exercising them directly—scaling from **1,000 → 10,000 → 100,000 keys** (e.g., 1 KB values).
+>
+> Measure and tabulate:
+> - **RAM footprint (`HeapAlloc` / `HeapObjects`):** Go heap overhead of pointer-heavy `node` structs + `Children` hash maps vs. raw key/value byte size.
+> - **Stop-the-world clone pause (`worldLock` hold time):** Time spent inside `Root.Clone()` while all reads and writes are blocked.
+> - **Total `Save()` latency & allocations:** Full `Clone()` + `json.Marshal` duration, peak transient memory (2× tree + JSON buffer), and resulting snapshot file size.
+> - *(Optional visualization: bar/line plot comparing 1k / 10k / 100k keys to illustrate the `O(N)` cliff.)*
 
 ## Why It Fit 2013—and Where the First Cracks Appeared
 
-TBD — Balanced retrospective grounded in `~/Documents/goraft` and `~/Documents/etcd` (`v0.4.x`):
-- **What worked brilliantly:** Single static Go binary, zero external dependencies, intuitive filesystem mental model, fast RAM reads.
-- **What broke (`goraft` coupling):** Inspect how `goraft` tightly coupled network transport, disk persistence, timers, and state-machine application behind coarse locking—producing lock contention, brittle network-partition behavior, and hard-to-test failure modes as clusters matured.
-- **Latent storage limits:** Full-tree JSON snapshots, Go heap pointer trees, and fixed watch windows were fine at CoreOS config scale, but already ticking time bombs for larger workloads.
+Judged against the 2013 CoreOS Container Linux workload, `etcd v0.1 – v0.4` was a smart piece of engineering. It delivered a single static Go binary with zero external dependencies, a filesystem mental model any Linux operator could poke with `curl`, microsecond reads straight from RAM, and crash recovery built on plain JSON snapshots. When your cluster holds 50 keys for `fleet`, `locksmith`, and `confd`, an `O(N)` clone-and-JSON-dump takes a fraction of a millisecond and costs nothing.
+
+Yet as CoreOS clusters moved into production in 2014, **two distinct sets of cracks** opened up—one immediate, and one waiting quietly for a bigger workload.
+
+### 1. The Immediate Crack: `goraft`'s Tight Coupling
+
+The first wall `etcd` hit wasn't even the in-memory tree—it was `goraft`.
+
+Inside `third_party/github.com/goraft/raft/`, `goraft`'s `server` struct bundled every layer of a distributed system into one tightly coupled package:
+- **Network transport** (`http_transporter.go` and per-peer heartbeat goroutines),
+- **Disk I/O** (`os.File` writes and `fsync`s directly inside `Log` and `Snapshot.save()`),
+- **Timers and goroutine lifecycle** (`leaderLoop`, `followerLoop`, `candidateLoop`), and
+- **Synchronous state-machine execution** (`Log.setCommitIndex()` calls `l.ApplyFunc(entry, command)` synchronously *while holding `Log.mutex.Lock()`*).
+
+That coupling meant disk stalls, slow HTTP peers, and state-machine mutations contended over coarse locks and tangled goroutines. Even `TakeSnapshot()` in `etcd v0.4.9` (`third_party/github.com/goraft/raft/server.go:1199`) carried a telling comment right in the production code:
+
+```go
+// third_party/github.com/goraft/raft/server.go (etcd v0.4.9)
+func (s *server) TakeSnapshot() error {
+	// ...
+	// TODO: acquire the lock and no more committed is allowed
+	// This will be done after finishing refactoring heartbeat
+	s.debugln("take.snapshot")
+
+	lastIndex, lastTerm := s.log.commitInfo()
+	// ...
+	state, err := s.stateMachine.Save()
+```
+
+Because `TakeSnapshot()` read `lastIndex` *before* calling `stateMachine.Save()` without locking out concurrent commits, mutations could still apply to `store` in between. Combined with brittle behavior during network partitions and the impossibility of deterministically unit-testing consensus logic when network sockets, timers, and disk files were wired directly into the protocol loop, `goraft` could not be patched into a rock-solid foundation.
+
+### 2. The Latent Time Bombs Inside `store`
+
+Meanwhile, three storage design choices that were invisible at CoreOS config scale were quietly waiting to blow up as soon as datasets and write rates grew:
+
+1. **Pointer-heavy Go heap tree:** Storing every key and directory as separate heap-allocated `node` structs linked by `map[string]*node` pointers meant every key added GC scanning work—a growing hazard for Go's early stop-the-world garbage collector.
+2. **`O(N)` full-tree JSON snapshots:** Cloning the entire tree under an exclusive `worldLock`, JSON-marshaling it (twice, once inside `store` and again inside `goraft`), and rewriting the log every 10,000 commits worked for 100 KB—not for hundreds of megabytes of constantly mutating state.
+3. **A 1,000-slot watch ring buffer:** Fine for a handful of `confd` instances watching quiet `/services/*` directories, brittle under high write churn where slow watchers would constantly hit `401 EcodeEventIndexCleared` and hammer `etcd` with full tree re-reads.
 
 ## Looking Ahead to Part 2
 
-TBD — Smooth handoff to **Part 2 (`v2.0 – v2.3`)**:
-To make `etcd` production-grade, CoreOS replaced `goraft` with a clean-sheet, decoupled state-machine Raft implementation (`etcd/raft`) backed by segmented `wal` and `snap` files. That solved consensus stability—just in time for **Kubernetes v1.0** to adopt `etcd` and push the still-in-memory tree past its breaking point.
+By late 2014, CoreOS knew `goraft` had to go. In **Part 2 (`v2.0 – v2.3`, 2015)**, they threw out `goraft` completely and built **`etcd/raft`**—a clean-sheet, pure state-machine consensus library that decoupled network transport, timers, and disk persistence into separate, CRC-checksummed **`wal`** and **`snap`** packages.
+
+That rewrite turned `etcd` into a rock-solid consensus engine—just in time for **Kubernetes v1.0** (July 2015) to adopt `etcd` as its sole cluster state store. What CoreOS did *not* replace in `etcd 2.0`, however, was the in-memory directory tree (`v2store`). And Kubernetes was about to hit every single one of those three latent time bombs at full speed.
