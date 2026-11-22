@@ -257,11 +257,9 @@ func (s *store) DeleteExpiredKeys(cutoff time.Time) {
 }
 ```
 
-> **TODO — Animation 1 (`ttl_key_heap.webp`):**
-> *Show `ttlKeyHeap` simultaneously as its logical binary tree, its flat `array []*node` slice, and its `keyMap map[*node]int` lookup table, stepping through three operations:*
-> 1. **Insert (`heap.Push`):** *Register `web@2 (t+20s)`, `fleet-w1 (t+15s)`, and `web@1 (t+10s)`; animate `web@1` appending to the end of `array` and sifting up via `Less` + `Swap` to `array[0]` while `keyMap` updates each swapped node's index.*
-> 2. **Heartbeat refresh (`update`):** *`web@1` refreshes its TTL to `t+40s`; highlight the `O(1)` lookup `keyMap[web@1] → 0`, remove and re-push `web@1` so `fleet-w1 (t+15s)` bubbles to `array[0]` and `web@1` sinks to a leaf.*
-> 3. **Expiration (`DeleteExpiredKeys(cutoff)`):** *Advance a `cutoff` clock past `t+15s`; `top()` peeks `array[0]`, confirms `ExpireTime <= cutoff`, pops `fleet-w1` (sifting `web@2` up to `array[0]`), removes `fleet-w1` from the directory tree, and stops as soon as `array[0].ExpireTime > cutoff`.*
+Putting that behavior into motion across our three `web` replicas (`ttl=30s`), you can see why a min-heap makes ephemeral heartbeats so effortless—healthy renewals keep pushing keys down below the root, while a crashed container inevitably rises to the top and expires as soon as time catches up:
+
+![How ttlKeyHeap Tracks Ephemeral Heartbeats & Expirations](./ttl_key_heap.webp)
 
 Notice something subtle about `DeleteExpiredKeys`'s signature: it does **not** call `time.Now()` itself—it takes an explicit `cutoff time.Time` parameter. If three `etcd` nodes expired keys using their own local wall clocks, clock skew would cause them to expire keys at different points relative to incoming writes, diverging their trees and `CurrentIndex` values. We'll see in the next section how `etcd` solves this through Raft.
 

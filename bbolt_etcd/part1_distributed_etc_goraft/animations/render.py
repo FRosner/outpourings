@@ -12,11 +12,12 @@ from pathlib import Path
 import sys
 from typing import Dict
 
-from . import coreos_cluster_bootstrap
+from . import coreos_cluster_bootstrap, ttl_key_heap
 
 # Register new Part 1 animations here as they are added:
 ANIMATIONS: Dict[str, object] = {
     coreos_cluster_bootstrap.NAME: coreos_cluster_bootstrap,
+    ttl_key_heap.NAME: ttl_key_heap,
 }
 
 
