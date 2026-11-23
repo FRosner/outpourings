@@ -64,7 +64,7 @@ Notice the scale of what `etcd` actually holds once the entire cluster is up and
 
 When an entire cluster's working set fits in a few hundred kilobytes, you do not build an on-disk B+tree or an LSM-tree. Early `etcd` (`v0.1 – v0.4`) had no embedded database engine at all—its primary storage engine was an **in-memory Go directory tree** (`store`), exposed over a simple HTTP+JSON API on port `4001`.
 
-Looking directly at `store/store.go` in `etcd v0.4.9`, the entire storage engine is summarized in a single seven-field struct:
+Looking directly at [`store/store.go`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/store.go#L66-L74) in `etcd v0.4.9`, the entire storage engine is summarized in a single seven-field struct:
 
 ```go
 // store/store.go (etcd v0.4.9)
@@ -92,7 +92,7 @@ Let's unpack each of those four pieces in code.
 
 ### The Directory Tree, `worldLock`, and Atomic CAS
 
-At the root of the store sits a Unix-like tree of `node` structs (`store/node.go`):
+At the root of the store sits a Unix-like tree of `node` structs ([`store/node.go`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/node.go#L25-L40)):
 
 ```go
 // store/node.go (etcd v0.4.9)
@@ -135,9 +135,9 @@ curl -X PUT http://10.0.0.1:4001/v2/keys/coreos.com/updateengine/rebootlock/sema
   -d value='{"semaphore":0,"max":1,"holders":["worker-1"]}'
 ```
 
-*Note that `coreos/locksmith`: `locksmith` deliberately acquires this semaphore with `prevIndex` without a TTL or watch. A rebooting host must keep holding the slot while powered off and only releases it via another CAS after booting back up; other hosts retry with exponential backoff.*
+*Note that `locksmith` deliberately [acquires](https://github.com/coreos/locksmith/blob/v0.2.3/lock/etcd.go#L82-L95) this semaphore with `prevIndex` without a TTL or watch. A rebooting host must keep holding the slot while powered off and only releases it via another CAS after booting back up; other hosts retry with exponential backoff.*
 
-Inside `store.CompareAndSwap` (`store/store.go`), the check-and-update executes atomically under `worldLock`:
+Inside `store.CompareAndSwap` ([`store/store.go`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/store.go#L199-L250)), the check-and-update executes atomically under `worldLock`:
 
 ```go
 // store/store.go (etcd v0.4.9, trimmed)
@@ -177,7 +177,7 @@ curl -X PUT http://10.0.0.1:4001/v2/keys/services/web/web@1 \
   -d ttl=30
 ```
 
-When `store` inserts `/services/web/web@1` (auto-creating `/services` and `/services/web` along the way), it sees a non-zero `ExpireTime` and registers the `*node` pointer in `ttlKeyHeap` (`store/ttl_key_heap.go`). Rather than keeping a bare slice or scanning every key in the tree to find expired ones, `ttlKeyHeap` implements Go's standard library `container/heap.Interface` (`Len`, `Less`, `Swap`, `Push`, `Pop`):
+When `store` inserts `/services/web/web@1` (auto-creating `/services` and `/services/web` along the way), it sees a non-zero `ExpireTime` and registers the `*node` pointer in `ttlKeyHeap` ([`store/ttl_key_heap.go`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/ttl_key_heap.go#L8-L74)). Rather than keeping a bare slice or scanning every key in the tree to find expired ones, `ttlKeyHeap` implements Go's standard library `container/heap.Interface` (`Len`, `Less`, `Swap`, `Push`, `Pop`):
 
 ```go
 // store/ttl_key_heap.go (etcd v0.4.9, trimmed)
@@ -230,7 +230,7 @@ Two details explain how this data structure works:
 1. **Ordering `array` by `ExpireTime` so `array[0]` always expires first:** Go's `container/heap` treats the flat slice `array` as an implicit binary tree where the children of index `i` sit at `2*i + 1` and `2*i + 2`. Whenever `etcd` inserts or removes a node via `heap.Push` / `heap.Pop`, `container/heap` calls `Less(i, j)`—comparing `ExpireTime` on the `*node` pointers—and swaps elements up or down a single root-to-leaf path (`O(log N)`) to preserve the min-heap invariant: every parent expires earlier than both of its children. As a result, the soonest-to-expire key always sits at the root (`array[0]`), so checking whether anything is due to expire is an `O(1)` peek.
 2. **Tracking positions with `keyMap` for heartbeat refreshes and early deletes:** A plain binary heap only knows where the *earliest* element sits (`array[0]`). When `web@1` refreshes its 30-second heartbeat (`UpdateTTL`) or gets deleted manually, `store` finds the `*node` via the directory tree—not the heap—so it has no idea which slot `i` in `array` that node currently occupies. Because `Push`, `Pop`, and `Swap` keep `keyMap[node] = i` synchronized on every move, `update(n)` and `remove(n)` find the node's slice index in `O(1)` and rebalance via `heap.Remove` / `heap.Push` in `O(log N)` instead of linearly scanning the entire slice.
 
-Expiring overdue keys is then a tight loop in `store.DeleteExpiredKeys(cutoff time.Time)`:
+Expiring overdue keys is then a tight loop in [`store.DeleteExpiredKeys(cutoff time.Time)`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/store.go#L565-L592):
 
 ```go
 // store/store.go (etcd v0.4.9, trimmed)
@@ -271,7 +271,7 @@ On Worker 3, `nginx` (driven by a template helper like `confd`) needs to learn i
 curl "http://10.0.0.1:4001/v2/keys/services/web?wait=true&recursive=true&waitIndex=42"
 ```
 
-Inside `store`, watches are managed by `watcherHub` (`store/watcher_hub.go`):
+Inside `store`, watches are managed by `watcherHub` ([`store/watcher_hub.go`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/watcher_hub.go#L19-L24)):
 
 ```go
 // store/watcher_hub.go (etcd v0.4.9)
@@ -283,7 +283,7 @@ type watcherHub struct {
 }
 ```
 
-When no matching change has happened yet, `watcherHub.watch()` allocates a buffered `EventChan` and parks the watcher in `watchers["/services/web"]`, leaving the HTTP request open. Thirty seconds after Worker 1 powers down for its OS update, `DeleteExpiredKeys` pops `web@1` at `CurrentIndex = 43` and calls `WatcherHub.notify(e)`. `notify` splits `e.Node.Key` (`/services/web/web@1`) on `"/"` and walks every ancestor prefix—`/`, `/services`, `/services/web`, `/services/web/web@1`—waking `confd`'s hanging GET with a JSON response:
+When no matching change has happened yet, [`watcherHub.watch()`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/watcher_hub.go#L41) allocates a buffered `EventChan` and parks the watcher in `watchers["/services/web"]`, leaving the HTTP request open. Thirty seconds after Worker 1 powers down for its OS update, `DeleteExpiredKeys` pops `web@1` at `CurrentIndex = 43` and calls [`WatcherHub.notify(e)`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/watcher_hub.go#L95). `notify` splits `e.Node.Key` (`/services/web/web@1`) on `"/"` and walks every ancestor prefix—`/`, `/services`, `/services/web`, `/services/web/web@1`—waking `confd`'s hanging GET with a JSON response:
 
 ```json
 {
@@ -295,7 +295,7 @@ When no matching change has happened yet, `watcherHub.watch()` allocates a buffe
 
 Because each HTTP long-poll delivers only a **single** event and closes the connection, there is an inherent gap while `confd` reloads `nginx` and opens its next `?wait=true` request. During that exact window, `fleetd` reschedules `web@1` onto Worker 3 (`10.0.1.3:8081`, `CurrentIndex = 44`). If `etcd` only notified live watchers, `confd` would miss index `44`.
 
-To bridge that gap, `watcherHub` maintains `EventHistory` (`store/event_history.go` + `store/event_queue.go`)—an in-memory **fixed-size ring buffer** initialized to **1,000 events** (`newWatchHub(1000)` in `store/store.go`):
+To bridge that gap, `watcherHub` maintains `EventHistory` ([`store/event_history.go`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/event_history.go#L12-L17) + [`store/event_queue.go`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/event_queue.go#L3-L9))—an in-memory **fixed-size ring buffer** initialized to **1,000 events** (`newWatchHub(1000)` in [`store/store.go`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/store.go#L80-L88)):
 
 ```go
 // store/event_history.go & store/event_queue.go (etcd v0.4.9)
@@ -315,7 +315,7 @@ type eventQueue struct {
 }
 ```
 
-When `confd` reconnects with `?wait=true&recursive=true&waitIndex=44`, `EventHistory.scan()` checks the ring buffer before parking the request:
+When `confd` reconnects with `?wait=true&recursive=true&waitIndex=44`, [`EventHistory.scan()`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/event_history.go#L44-L89) checks the ring buffer before parking the request:
 
 1. **Future index (`waitIndex > LastIndex`):** Nothing to replay yet; park the watcher in `watchers["/services/web"]`.
 2. **In-window index (`StartIndex <= waitIndex <= LastIndex`):** Jump directly to `(Queue.Front + int(waitIndex - StartIndex)) % 1000` and scan forward for the first matching event—immediately returning index `44` so `confd` catches up without missing a beat.
@@ -325,7 +325,7 @@ You can watch all three cases play out on a scaled-down 10-slot ring buffer—a 
 
 ![Long-Polling Watches and the EventHistory Ring Buffer](./event_history_ring_buffer.webp)
 
-Looking at the source comment right above `newWatchHub` in `store/watcher_hub.go` reveals the exact 2013 workload assumption baked into that number:
+Looking at the source comment right above `newWatchHub` in [`store/watcher_hub.go`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/watcher_hub.go#L26-L35) reveals the exact 2013 workload assumption baked into that number:
 
 ```go
 // Typically, we only need to keep a small size of history[smaller than 20K].
@@ -379,14 +379,14 @@ That is why `/var/lib/etcd/` in `etcd v0.4` had such a remarkably sparse on-disk
 Follow `locksmithd`'s CAS request from earlier all the way through `goraft`:
 
 1. Worker 1 sends `PUT /v2/keys/coreos.com/updateengine/rebootlock/semaphore?prevIndex=5` to port `4001`. (If it hits a follower, `etcd` redirects or proxies the write to the leader.)
-2. The leader wraps the request in a `CompareAndSwapCommand` (`etcd:compareAndSwap`) and passes it to `raftServer.Do(cmd)`.
-3. Inside `goraft`'s `leaderLoop`, `processCommand` creates a `LogEntry`, encodes the JSON command into the local `/var/lib/etcd/log` file, and waits for peer heartbeat goroutines to replicate the entry over port `7001` via `AppendEntries`.
-4. Once a majority (2 of 3 nodes) has written the entry to its `log`, the leader advances `commitIndex`. On each node, `Log.setCommitIndex()` decodes the command and invokes `ApplyFunc` → `CompareAndSwapCommand.Apply()` → `store.CompareAndSwap(...)`.
+2. The leader wraps the request in a [`CompareAndSwapCommand`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/v2/compare_and_swap_command.go#L16-L41) (`etcd:compareAndSwap`) and passes it to `raftServer.Do(cmd)`.
+3. Inside `goraft`'s [`leaderLoop`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L812), [`processCommand`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L902) creates a `LogEntry`, encodes the JSON command into the local `/var/lib/etcd/log` file, and waits for peer heartbeat goroutines to replicate the entry over port `7001` via `AppendEntries`.
+4. Once a majority (2 of 3 nodes) has written the entry to its `log`, the leader advances `commitIndex`. On each node, [`Log.setCommitIndex()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/log.go#L331-L385) decodes the command and invokes `ApplyFunc` → `CompareAndSwapCommand.Apply()` → `store.CompareAndSwap(...)`.
 5. Only after `store.CompareAndSwap` updates the tree and wakes `WatcherHub` does the leader return HTTP `200 OK` (with `modifiedIndex: 42`) to Worker 1. If Worker 2 concurrently sent `prevIndex=5`, its command lands at a later log index, applies after Worker 1's, and deterministically fails with `101: Compare failed` on every replica.
 
 This same command-log mechanism answers our cliffhanger from the previous section: **how do three independent nodes expire TTLs deterministically without trusting local wall clocks?**
 
-In `server/peer_server.go`, the Raft leader runs a 500 ms background ticker (`monitorSync`) that proposes a `SyncCommand` carrying the *leader's* timestamp right into the Raft log:
+In [`server/peer_server.go`](https://github.com/etcd-io/etcd/blob/v0.4.9/server/peer_server.go#L792-L805), the Raft leader runs a 500 ms background ticker (`monitorSync`) that proposes a `SyncCommand` carrying the *leader's* timestamp right into the Raft log:
 
 ```go
 // server/peer_server.go (etcd v0.4.9)
@@ -406,7 +406,7 @@ func (s *PeerServer) monitorSync() {
 }
 ```
 
-When each replica commits and applies that `etcd:sync` log entry (`store/v2/sync_command.go`), it passes the leader's serialized `c.Time` straight into `s.DeleteExpiredKeys(c.Time)`. Every node pops the exact same expired nodes from its `ttlKeyHeap` at the exact same point in the log, bumping `CurrentIndex` identically.
+When each replica commits and applies that `etcd:sync` log entry ([`store/v2/sync_command.go`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/v2/sync_command.go#L14-L28)), it passes the leader's serialized `c.Time` straight into `s.DeleteExpiredKeys(c.Time)`. Every node pops the exact same expired nodes from its `ttlKeyHeap` at the exact same point in the log, bumping `CurrentIndex` identically.
 
 Notice the subtle storage side effect: **even a completely idle `etcd v0.4` cluster writes two `etcd:sync` commands per second into the Raft log**—roughly 172,800 log entries per day.
 
@@ -421,9 +421,9 @@ An append-only command log cannot grow forever. Without compaction, `/var/lib/et
 
 Raft solves unbounded log growth with **snapshotting**: periodically capture the entire state machine's current state to disk at some committed log index `L`, then discard all log entries up to `L`.
 
-In `etcd v0.4.9`, `PeerServer.monitorSnapshot()` (`server/peer_server.go`) wakes up every 3 seconds and checks whether `CommitIndex - lastSnapshotIndex` exceeds `snapshot_count` (default **`10000`** entries—which, thanks to the 500 ms `SyncCommand`, happens at least every ~83 minutes even with zero user writes). When it crosses that threshold, it calls `raftServer.TakeSnapshot()`:
+In `etcd v0.4.9`, `PeerServer.monitorSnapshot()` ([`server/peer_server.go`](https://github.com/etcd-io/etcd/blob/v0.4.9/server/peer_server.go#L772-L790)) wakes up every 3 seconds and checks whether `CommitIndex - lastSnapshotIndex` exceeds `snapshot_count` (default **`10000`** entries—which, thanks to the 500 ms `SyncCommand`, happens at least every ~83 minutes even with zero user writes). When it crosses that threshold, it calls [`raftServer.TakeSnapshot()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L1188-L1241):
 
-1. **Stop-the-world clone + JSON serialization (`store.Save()`):**
+1. **Stop-the-world clone + JSON serialization ([`store.Save()`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/store.go#L620-L639)):**
    `goraft` asks the state machine (`store`) to serialize itself:
 
    ```go
@@ -448,9 +448,9 @@ In `etcd v0.4.9`, `PeerServer.monitorSnapshot()` (`server/peer_server.go`) wakes
    }
    ```
 
-   Look closely at what happens here. To avoid holding `worldLock` during slow JSON encoding, `store.Save()` first takes the **exclusive `worldLock.Lock()`**—blocking every read and write—and performs a **full recursive deep copy** of all `N` nodes in `Root.Clone()`, plus `EventHistory` and `Stats`. Only after allocating a second copy of the entire keyspace in RAM does it release `worldLock` and run `json.Marshal(clonedStore)` over the clone.
+   Look closely at what happens here. To avoid holding `worldLock` during slow JSON encoding, `store.Save()` first takes the **exclusive `worldLock.Lock()`**—blocking every read and write—and performs a **full recursive deep copy** of all `N` nodes in [`Root.Clone()`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/node.go#L355-L367), plus `EventHistory` and `Stats`. Only after allocating a second copy of the entire keyspace in RAM does it release `worldLock` and run `json.Marshal(clonedStore)` over the clone.
 
-2. **Double-encoded snapshot file (`goraft/raft/snapshot.go`):**
+2. **Double-encoded snapshot file ([`goraft/raft/snapshot.go`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/snapshot.go#L55-L86)):**
    `goraft`'s `Snapshot.save()` wraps those `state` JSON bytes inside an outer `Snapshot{LastIndex, LastTerm, Peers, State}` struct, runs `json.Marshal(ss)` a *second* time (which base64-encodes `State []byte` inside the outer JSON envelope!), writes an 8-character CRC32 checksum followed by the payload to `snapshot/<term>_<index>.ss`, calls `file.Sync()`, and deletes the previous snapshot file:
 
    ```text
@@ -463,11 +463,11 @@ In `etcd v0.4.9`, `PeerServer.monitorSnapshot()` (`server/peer_server.go`) wakes
    }
    ```
 
-3. **Log rewrite and truncation (`goraft/raft/log.go`):**
-   With the snapshot safely synced, `goraft` keeps a 200-entry safety tail (`NumberOfLogEntriesAfterSnapshot = 200`) so slightly lagging followers can still catch up via `AppendEntries` instead of transferring a full snapshot. It calls `s.log.compact()`, which locks `Log.mutex`, writes those surviving tail entries into `log.new`, calls `file.Sync()`, and atomically `os.Rename`s `log.new` over `log`.
+3. **Log rewrite and truncation ([`goraft/raft/log.go`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/log.go#L568-L624)):**
+   With the snapshot safely synced, `goraft` keeps a 200-entry safety tail ([`NumberOfLogEntriesAfterSnapshot = 200`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L34)) so slightly lagging followers can still catch up via `AppendEntries` instead of transferring a full snapshot. It calls `s.log.compact()`, which locks `Log.mutex`, writes those surviving tail entries into `log.new`, calls `file.Sync()`, and atomically `os.Rename`s `log.new` over `log`.
 
-4. **Crash recovery (`store.Recovery()`):**
-   When a node restarts, it reads the latest `<term>_<index>.ss` file, `json.Unmarshal`s the tree back into RAM, walks every node via `Root.recoverAndclean()` to reconstruct the fields that JSON could not encode (`Parent` pointers marked `json:"-"` and the unexported `ttlKeyHeap`), and replays whatever entries remain in `/var/lib/etcd/log`.
+4. **Crash recovery ([`store.Recovery()`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/store.go#L645-L658)):**
+   When a node restarts, it reads the latest `<term>_<index>.ss` file, `json.Unmarshal`s the tree back into RAM, walks every node via [`Root.recoverAndclean()`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/node.go#L376-L389) to reconstruct the fields that JSON could not encode (`Parent` pointers marked `json:"-"` and the unexported `ttlKeyHeap`), and replays whatever entries remain in `/var/lib/etcd/log`.
 
 Every step of that pipeline is dead simple to reason about—and scales strictly as **`O(N)` in the total size of the tree**, in RAM, CPU, and disk I/O.
 
@@ -492,13 +492,13 @@ Yet as CoreOS clusters moved into production in 2014, **two distinct sets of cra
 
 The first wall `etcd` hit wasn't even the in-memory tree—it was `goraft`.
 
-Inside `third_party/github.com/goraft/raft/`, `goraft`'s `server` struct bundled every layer of a distributed system into one tightly coupled package:
-- **Network transport** (`http_transporter.go` and per-peer heartbeat goroutines),
-- **Disk I/O** (`os.File` writes and `fsync`s directly inside `Log` and `Snapshot.save()`),
-- **Timers and goroutine lifecycle** (`leaderLoop`, `followerLoop`, `candidateLoop`), and
-- **Synchronous state-machine execution** (`Log.setCommitIndex()` calls `l.ApplyFunc(entry, command)` synchronously *while holding `Log.mutex.Lock()`*).
+Inside [`third_party/github.com/goraft/raft/`](https://github.com/etcd-io/etcd/tree/v0.4.9/third_party/github.com/goraft/raft), `goraft`'s [`server`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L111) struct bundled every layer of a distributed system into one tightly coupled package:
+- **Network transport** ([`http_transporter.go`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/http_transporter.go) and per-peer heartbeat goroutines),
+- **Disk I/O** (`os.File` writes and `fsync`s directly inside [`Log`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/log.go) and [`Snapshot.save()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/snapshot.go#L55-L86)),
+- **Timers and goroutine lifecycle** ([`leaderLoop`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L812), [`followerLoop`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L669), [`candidateLoop`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L731)), and
+- **Synchronous state-machine execution** ([`Log.setCommitIndex()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/log.go#L331-L385) calls `l.ApplyFunc(entry, command)` synchronously *while holding `Log.mutex.Lock()`*).
 
-That coupling meant disk stalls, slow HTTP peers, and state-machine mutations contended over coarse locks and tangled goroutines. Even `TakeSnapshot()` in `etcd v0.4.9` (`third_party/github.com/goraft/raft/server.go:1199`) carried a telling comment right in the production code:
+That coupling meant disk stalls, slow HTTP peers, and state-machine mutations contended over coarse locks and tangled goroutines. Even `TakeSnapshot()` in `etcd v0.4.9` ([`third_party/github.com/goraft/raft/server.go:1199`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L1199)) carried a telling comment right in the production code:
 
 ```go
 // third_party/github.com/goraft/raft/server.go (etcd v0.4.9)
