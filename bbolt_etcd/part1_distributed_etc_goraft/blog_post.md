@@ -2,7 +2,7 @@
 title: "The Evolution of etcd Storage (Part 1): When a Distributed /etc Fit in RAM (v0.1 – v0.4)"
 published: false
 description: "TBD — How CoreOS's small-config workload shaped etcd's earliest storage engine: an in-memory directory tree, goraft consensus, JSON snapshots, and the cracks that led to etcd v2."
-tags: etcd, distributed-systems, databases, storage
+tags: etcd, distributedsystems, databases, storage
 ---
 
 <!--
@@ -135,7 +135,7 @@ curl -X PUT http://10.0.0.1:4001/v2/keys/coreos.com/updateengine/rebootlock/sema
   -d value='{"semaphore":0,"max":1,"holders":["worker-1"]}'
 ```
 
-*(Code archaeology note from `coreos/locksmith`: `locksmith` deliberately acquires this semaphore with `prevIndex` **without** a TTL or watch. A rebooting host must keep holding the slot while powered off and only releases it via another CAS after booting back up; other hosts retry with exponential backoff.)*
+*Note that `coreos/locksmith`: `locksmith` deliberately acquires this semaphore with `prevIndex` without a TTL or watch. A rebooting host must keep holding the slot while powered off and only releases it via another CAS after booting back up; other hosts retry with exponential backoff.*
 
 Inside `store.CompareAndSwap` (`store/store.go`), the check-and-update executes atomically under `worldLock`:
 
@@ -265,7 +265,7 @@ Notice something subtle about `DeleteExpiredKeys`'s signature: it does **not** c
 
 ### Long-Polling Watches: `WatcherHub` and the `EventHistory` Ring Buffer
 
-On Worker 3, `nginx` (driven by a template helper like `confd`) needs to learn immediately when `/services/web/web@1` disappears during Worker 1's reboot—without polling `etcd` in a tight loop. In `v0.4`, watches were implemented as **HTTP long-polling ("hanging GET")** requests:
+On Worker 3, `nginx` (driven by a template helper like `confd`) needs to learn immediately when `/services/web/web@1` disappears during Worker 1's reboot—without polling `etcd` in a tight loop. In `v0.4`, watches were implemented as **HTTP long-polling** ("hanging GET") requests:
 
 ```bash
 curl "http://10.0.0.1:4001/v2/keys/services/web?wait=true&recursive=true&waitIndex=42"
@@ -319,13 +319,11 @@ When `confd` reconnects with `?wait=true&recursive=true&waitIndex=44`, `EventHis
 
 1. **Future index (`waitIndex > LastIndex`):** Nothing to replay yet; park the watcher in `watchers["/services/web"]`.
 2. **In-window index (`StartIndex <= waitIndex <= LastIndex`):** Jump directly to `(Queue.Front + int(waitIndex - StartIndex)) % 1000` and scan forward for the first matching event—immediately returning index `44` so `confd` catches up without missing a beat.
-3. **Evicted index (`waitIndex < StartIndex`):** Over 1,000 mutations have occurred since the watcher last checked in, overwriting its slot in the ring buffer. `scan()` aborts with error `401` (`EcodeEventIndexCleared`: *"The event in requested index is outdated and cleared"*), forcing the client to do a full recursive `GET` to re-sync.
+3. **Cleared index (`waitIndex < StartIndex`):** Over 1,000 mutations have occurred since the watcher last checked in, overwriting its slot in the ring buffer. `scan()` aborts with error `401` (`EcodeEventIndexCleared`: *"The event in requested index is outdated and cleared"*), forcing the client to do a full recursive `GET` to re-sync.
 
-> **TODO — Animation 2 (`event_history_ring_buffer.webp`):**
-> *Visualize `EventHistory` as a circular 1,000-slot ring buffer with `Front` (`StartIndex`) and `Back` (`LastIndex`) pointers:*
-> 1. *Steady state: mutations advance `CurrentIndex` (42 → 43 → 44), writing `Event` pointers into consecutive slots.*
-> 2. *Fast catch-up: `confd` wakes on index 43, reloads `nginx` while index 44 lands, reconnects with `waitIndex=44`, and `EventHistory.scan()` hits index 44 inside the active window.*
-> 3. *Write-burst eviction: a sudden burst of >1,000 writes wraps `Back` around the ring, pushing `StartIndex` past a slow watcher's `waitIndex` and triggering `401 EcodeEventIndexCleared`.*
+You can watch all three cases play out on a scaled-down 10-slot ring buffer—a live watch waking on `#1`, a quick reconnect replaying `#2` from history, and a burst of writes wrapping around to clear `#3`:
+
+![Long-Polling Watches and the EventHistory Ring Buffer](./event_history_ring_buffer.webp)
 
 Looking at the source comment right above `newWatchHub` in `store/watcher_hub.go` reveals the exact 2013 workload assumption baked into that number:
 

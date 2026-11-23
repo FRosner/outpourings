@@ -797,10 +797,8 @@ def render_frame(st: Dict, dpi: int = 125):
     # Base timeline track bar + elapsed progress highlight
     ax.plot([track_x0, track_x1], [track_y, track_y], color=BOX_BORDER_HI, lw=3.0, solid_capstyle="round", zorder=3)
     now_x = t_to_x(now)
-    in_crisis = (st["act"] == 2 and now >= 35.0 and len(st["crashed"]) > 0)
-    prog_col = ACCENT_CORAL if in_crisis else ACCENT_BLUE
     if now > 0.05:
-        ax.plot([track_x0, now_x], [track_y, track_y], color=prog_col, lw=3.6, solid_capstyle="round", alpha=0.88, zorder=4)
+        ax.plot([track_x0, now_x], [track_y, track_y], color=TEXT_MAIN, lw=3.4, solid_capstyle="round", alpha=0.88, zorder=4)
 
     # Time ticks every 5s cleanly below axis
     for ts in range(0, 65, 5):
