@@ -349,42 +349,21 @@ We won't detour into Raft's leader-election proofs or term safety here (for an i
 
 Every `etcd` node runs the exact same deterministic in-memory `store` we just inspected. Rather than replicating raw memory pages or key-value snapshots on every write, Raft replicates an **ordered, append-only log of commands** across the three nodes:
 
-```text
-  Client (:4001)
-        │  PUT /v2/keys/... (CAS / TTL)
-        ▼
-  ┌───────────────────────────────────────────────────────────┐
-  │ etcd-1 (goraft Leader)                                    │
-  │  1. Append command to local disk: /var/lib/etcd/log       │
-  │  2. Replicate via AppendEntries HTTP (:7001) to peers     ├────► etcd-2 (Follower): append log ──► apply to store
-  │  3. Quorum (2/3) persisted → commit & apply to RAM store  ├────► etcd-3 (Follower): append log ──► apply to store
-  │  4. Wake WatcherHub & reply HTTP 200 to client            │
-  └───────────────────────────────────────────────────────────┘
-```
+![How etcd's Replicated State Machine Handles a PUT Request](./replicated_state_machine.webp)
 
-If every node starts from the same empty `/` and applies the same committed log of commands in the same order, every node arrives at the exact same in-memory tree, the exact same `CurrentIndex`, and the exact same CAS winners. And if a node reboots, it recovers its RAM state from disk.
+Walking through the five steps in the animation shows how `locksmithd`'s CAS request actually flows through `goraft`'s code path:
 
-That is why `/var/lib/etcd/` in `etcd v0.4` had such a remarkably sparse on-disk layout—no database files, no page caches, no indexes, just three things:
+1. **Client PUT:** Worker 1 sends `PUT /v2/keys/coreos.com/updateengine/rebootlock/semaphore?prevIndex=5` to port `4001`. (If it hits a follower, `etcd` redirects or proxies the write to the leader.) The leader wraps the request in a [`CompareAndSwapCommand`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/v2/compare_and_swap_command.go#L16-L41) (`etcd:compareAndSwap`) and passes it to `raftServer.Do(cmd)`.
+2. **Append Log:** Inside `goraft`'s [`leaderLoop`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L812), [`processCommand`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L902) creates a `LogEntry` (`#42`) and encodes the JSON command into the leader's local `/var/lib/etcd/log` file.
+3. **Replicate:** Peer heartbeat goroutines replicate `#42` over port `7001` via `AppendEntries`; each follower appends the entry to its own `/var/lib/etcd/log` and replies with an acknowledgment.
+4. **Commit & Reply:** Once a majority (2 of 3 nodes) has persisted `#42`, the leader advances `commitIndex`. [`Log.setCommitIndex()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/log.go#L331-L385) decodes the command and invokes `ApplyFunc` → `CompareAndSwapCommand.Apply()` → `store.CompareAndSwap(...)`. Only after the leader updates its in-memory `store` and wakes `WatcherHub` does it return HTTP `200 OK` (with `modifiedIndex: 42`) to Worker 1.
+5. **Followers Apply:** Once followers receive the updated `commitIndex`, each runs the exact same `Log.setCommitIndex()` → `store.CompareAndSwap(...)` path against its own RAM tree. If Worker 2 concurrently sent `prevIndex=5`, its command lands at a later log index, applies after Worker 1's, and deterministically fails with `101: Compare failed` on every replica.
 
-```text
-/var/lib/etcd/
-├── conf                  # Raft peer configuration metadata
-├── log                   # Single append-only Raft command log
-└── snapshot/
-    └── <term>_<index>.ss # Periodic CRC32-prefixed JSON dump of the entire store
-```
+Because every node starts from the same empty `/` and applies the same committed log of commands in the same order, every replica arrives at the exact same in-memory tree, the exact same `CurrentIndex`, and the exact same CAS winners—and if a node reboots, it recovers its RAM state from disk.
 
-### Tracing Writes and Deterministic TTLs Through `goraft`
+### Deterministic TTL Expiration via `SyncCommand`
 
-Follow `locksmithd`'s CAS request from earlier all the way through `goraft`:
-
-1. Worker 1 sends `PUT /v2/keys/coreos.com/updateengine/rebootlock/semaphore?prevIndex=5` to port `4001`. (If it hits a follower, `etcd` redirects or proxies the write to the leader.)
-2. The leader wraps the request in a [`CompareAndSwapCommand`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/v2/compare_and_swap_command.go#L16-L41) (`etcd:compareAndSwap`) and passes it to `raftServer.Do(cmd)`.
-3. Inside `goraft`'s [`leaderLoop`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L812), [`processCommand`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L902) creates a `LogEntry`, encodes the JSON command into the local `/var/lib/etcd/log` file, and waits for peer heartbeat goroutines to replicate the entry over port `7001` via `AppendEntries`.
-4. Once a majority (2 of 3 nodes) has written the entry to its `log`, the leader advances `commitIndex`. On each node, [`Log.setCommitIndex()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/log.go#L331-L385) decodes the command and invokes `ApplyFunc` → `CompareAndSwapCommand.Apply()` → `store.CompareAndSwap(...)`.
-5. Only after `store.CompareAndSwap` updates the tree and wakes `WatcherHub` does the leader return HTTP `200 OK` (with `modifiedIndex: 42`) to Worker 1. If Worker 2 concurrently sent `prevIndex=5`, its command lands at a later log index, applies after Worker 1's, and deterministically fails with `101: Compare failed` on every replica.
-
-This same command-log mechanism answers our cliffhanger from the previous section: **how do three independent nodes expire TTLs deterministically without trusting local wall clocks?**
+That same command-log mechanism also answers our cliffhanger from the previous section: **how do three independent nodes expire TTLs deterministically without trusting local wall clocks?**
 
 In [`server/peer_server.go`](https://github.com/etcd-io/etcd/blob/v0.4.9/server/peer_server.go#L792-L805), the Raft leader runs a 500 ms background ticker (`monitorSync`) that proposes a `SyncCommand` carrying the *leader's* timestamp right into the Raft log:
 
@@ -410,16 +389,19 @@ When each replica commits and applies that `etcd:sync` log entry ([`store/v2/syn
 
 Notice the subtle storage side effect: **even a completely idle `etcd v0.4` cluster writes two `etcd:sync` commands per second into the Raft log**—roughly 172,800 log entries per day.
 
-> **TODO — Animation 3 (`goraft_write_and_sync.webp`):**
-> *Show the 3-node `etcd` cluster (`etcd-1` leader, `etcd-2` and `etcd-3` followers), each displaying its on-disk `/var/lib/etcd/log`, its in-memory `store` (`semaphore`, `web@1`, `CurrentIndex`), and a slightly skewed local wall clock (`12:00:31`, `12:00:29`, `12:00:32`):*
-> 1. **Competing CAS serialization:** *Worker 1 and Worker 2 both send `PUT .../semaphore?prevIndex=5`. The leader appends both `etcd:compareAndSwap` commands to its `log`, replicates them over `:7001` (`AppendEntries`) until a quorum (2/3) persists them, and commits. All three nodes apply in identical order: Worker 1 wins (`modifiedIndex: 42`, HTTP `200`), while Worker 2 deterministically hits `101: Compare failed`.*
-> 2. **Deterministic TTL expiration (`SyncCommand`):** *Even though `etcd-2`'s local clock still reads `12:00:29` (before `web@1`'s `12:00:30` expiry), the leader's 500 ms ticker appends `etcd:sync(12:00:31)` to the Raft log. Once committed, all three replicas pass `12:00:31` into `DeleteExpiredKeys` and expire `web@1` at the exact same log position, advancing `CurrentIndex` to `43` in lockstep.*
-
 ### Log Compaction and Full-Tree JSON Snapshots
 
 An append-only command log cannot grow forever. Without compaction, `/var/lib/etcd/log` would eventually fill the disk—and restarting a node would mean replaying millions of historical mutations from index 1 just to reconstruct a 50 KB tree.
 
-Raft solves unbounded log growth with **snapshotting**: periodically capture the entire state machine's current state to disk at some committed log index `L`, then discard all log entries up to `L`.
+Raft solves unbounded log growth with **snapshotting**: periodically capture the entire state machine's current state to disk at some committed log index `L`, then discard all log entries up to `L`. That gives `/var/lib/etcd/` in `etcd v0.4` its remarkably sparse on-disk layout—no database files, no page caches, no indexes, just three things:
+
+```text
+/var/lib/etcd/
+├── conf                  # Raft peer configuration metadata
+├── log                   # Single append-only Raft command log
+└── snapshot/
+    └── <term>_<index>.ss # Periodic CRC32-prefixed JSON dump of the entire store
+```
 
 In `etcd v0.4.9`, `PeerServer.monitorSnapshot()` ([`server/peer_server.go`](https://github.com/etcd-io/etcd/blob/v0.4.9/server/peer_server.go#L772-L790)) wakes up every 3 seconds and checks whether `CommitIndex - lastSnapshotIndex` exceeds `snapshot_count` (default **`10000`** entries—which, thanks to the 500 ms `SyncCommand`, happens at least every ~83 minutes even with zero user writes). When it crosses that threshold, it calls [`raftServer.TakeSnapshot()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L1188-L1241):
 
