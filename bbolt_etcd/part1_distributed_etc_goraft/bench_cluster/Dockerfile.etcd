@@ -1,0 +1,21 @@
+FROM golang:1.22-bookworm AS builder
+
+ENV GO111MODULE=off \
+    CGO_ENABLED=0
+
+WORKDIR /src/etcd
+ADD .build_src/etcd-src.tar /src/etcd/
+RUN chmod +x ./build && ./build
+
+FROM debian:bookworm-slim
+
+RUN apt-get update -qq && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /src/etcd/bin/etcd /usr/local/bin/etcd
+COPY etcd-entrypoint.sh /usr/local/bin/etcd-entrypoint.sh
+RUN chmod +x /usr/local/bin/etcd-entrypoint.sh
+
+EXPOSE 4001 7001
+ENTRYPOINT ["/usr/local/bin/etcd-entrypoint.sh"]

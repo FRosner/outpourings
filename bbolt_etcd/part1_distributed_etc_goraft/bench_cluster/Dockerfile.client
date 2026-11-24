@@ -1,0 +1,14 @@
+FROM golang:1.22-bookworm AS builder
+
+ENV CGO_ENABLED=0
+WORKDIR /src/client
+COPY client/go.mod ./
+COPY client/main.go ./
+RUN go build -ldflags="-s -w" -o /out/bench-client .
+
+FROM debian:bookworm-slim
+RUN apt-get update -qq && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=builder /out/bench-client /usr/local/bin/bench-client
+ENTRYPOINT ["/usr/local/bin/bench-client"]

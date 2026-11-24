@@ -1,0 +1,81 @@
+services:
+  etcd-1:
+    image: etcd-bench-node:${ETCD_BENCH_VERSION:-v0.4.9}
+    platform: linux/amd64
+    hostname: etcd-1
+    container_name: etcd-bench-1
+    cpus: 1.0
+    mem_limit: 512m
+    environment:
+      NODE_NAME: etcd-1
+      ETCD_BENCH_VERSION: ${ETCD_BENCH_VERSION:-v0.4.9}
+      SNAPSHOT_COUNT: ${SNAPSHOT_COUNT:-10000}
+      GOMAXPROCS: "1"
+    volumes:
+      - etcd1-data:/var/lib/etcd
+    networks:
+      - etcd_bench_net
+
+  etcd-2:
+    image: etcd-bench-node:${ETCD_BENCH_VERSION:-v0.4.9}
+    platform: linux/amd64
+    hostname: etcd-2
+    container_name: etcd-bench-2
+    cpus: 1.0
+    mem_limit: 512m
+    environment:
+      NODE_NAME: etcd-2
+      ETCD_BENCH_VERSION: ${ETCD_BENCH_VERSION:-v0.4.9}
+      SNAPSHOT_COUNT: ${SNAPSHOT_COUNT:-10000}
+      GOMAXPROCS: "1"
+    volumes:
+      - etcd2-data:/var/lib/etcd
+    networks:
+      - etcd_bench_net
+
+  etcd-3:
+    image: etcd-bench-node:${ETCD_BENCH_VERSION:-v0.4.9}
+    platform: linux/amd64
+    hostname: etcd-3
+    container_name: etcd-bench-3
+    cpus: 1.0
+    mem_limit: 512m
+    environment:
+      NODE_NAME: etcd-3
+      ETCD_BENCH_VERSION: ${ETCD_BENCH_VERSION:-v0.4.9}
+      SNAPSHOT_COUNT: ${SNAPSHOT_COUNT:-10000}
+      GOMAXPROCS: "1"
+    volumes:
+      - etcd3-data:/var/lib/etcd
+    networks:
+      - etcd_bench_net
+
+  bench-client:
+    image: etcd-bench-client:latest
+    platform: linux/amd64
+    hostname: bench-client
+    container_name: etcd-bench-client
+    cpus: 2.0
+    mem_limit: 1g
+    environment:
+      GOMAXPROCS: "2"
+    depends_on:
+      - etcd-1
+      - etcd-2
+      - etcd-3
+    volumes:
+      - etcd1-data:/mnt/etcd-1:ro
+      - etcd2-data:/mnt/etcd-2:ro
+      - etcd3-data:/mnt/etcd-3:ro
+      - ./results:/results
+    networks:
+      - etcd_bench_net
+
+volumes:
+  etcd1-data:
+  etcd2-data:
+  etcd3-data:
+
+networks:
+  etcd_bench_net:
+    driver: bridge
