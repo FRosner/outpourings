@@ -53,7 +53,8 @@ if [[ ! -x "${PYTHON_BIN}" ]]; then
 fi
 
 compose_down() {
-  ETCD_BENCH_VERSION="${ETCD_VERSION}" docker compose -p "${COMPOSE_PROJECT}" -f "${COMPOSE_FILE}" down -v --remove-orphans >/dev/null 2>&1 || true
+  ETCD_BENCH_VERSION="${ETCD_VERSION}" docker compose -p "${COMPOSE_PROJECT}" \
+    -f "${COMPOSE_FILE}" down -v --remove-orphans >/dev/null 2>&1 || true
 }
 
 cleanup() {
@@ -70,13 +71,33 @@ if [[ "${PLOT_ONLY}" -eq 0 ]]; then
     exit 1
   fi
 
+  # Pin each container to dedicated CPU cores to avoid Linux CFS 100ms quota throttling freezes.
+  NCPU="$(docker info --format '{{.NCPU}}' 2>/dev/null || echo 4)"
+  if [[ "${NCPU}" -ge 5 ]]; then
+    export CPUSET_ETCD1="0"
+    export CPUSET_ETCD2="1"
+    export CPUSET_ETCD3="2"
+    export CPUSET_CLIENT="3,4"
+  elif [[ "${NCPU}" -ge 4 ]]; then
+    export CPUSET_ETCD1="0"
+    export CPUSET_ETCD2="1"
+    export CPUSET_ETCD3="2"
+    export CPUSET_CLIENT="3"
+  else
+    export CPUSET_ETCD1="0"
+    export CPUSET_ETCD2="0"
+    export CPUSET_ETCD3="0"
+    export CPUSET_CLIENT="0"
+  fi
+  echo "==> Docker VM CPUs=${NCPU} -> pinning etcd={${CPUSET_ETCD1},${CPUSET_ETCD2},${CPUSET_ETCD3}}, bench-client={${CPUSET_CLIENT}}"
+
   mkdir -p "${RESULTS_DIR}" "${BUILD_SRC_DIR}"
   rm -f "${RESULTS_DIR}"/_tmp_"${ETCD_VERSION}"_*.json
 
-  echo "==> [1/4] Exporting clean source archive for etcd ${ETCD_VERSION} from ${ETCD_REPO}"
+  echo "==> [1/3] Exporting clean source archive for etcd ${ETCD_VERSION} from ${ETCD_REPO}"
   git -C "${ETCD_REPO}" archive --format=tar -o "${BUILD_SRC_DIR}/etcd-src.tar" "${ETCD_VERSION}"
 
-  echo "==> [2/4] Building linux/amd64 container images (etcd ${ETCD_VERSION} + Go bench-client)"
+  echo "==> [2/3] Building linux/amd64 container images (etcd ${ETCD_VERSION} + Go bench-client)"
   docker build --platform linux/amd64 \
     -f "${SCRIPT_DIR}/Dockerfile.etcd" \
     -t "etcd-bench-node:${ETCD_VERSION}" \
@@ -87,8 +108,8 @@ if [[ "${PLOT_ONLY}" -eq 0 ]]; then
     -t "etcd-bench-client:latest" \
     "${SCRIPT_DIR}"
 
-  echo "==> [3/4] Phase A — Steady-State Concurrency Scaling (c in ${CONCURRENCIES[*]}, snapshot-count=100000)"
   PHASE_A_FILES=()
+  echo "==> [3/3] Steady-State Concurrency Scaling (c in ${CONCURRENCIES[*]}, snapshot-count=100000)"
   for c in "${CONCURRENCIES[@]}"; do
     echo "    -> Starting fresh 3-node cluster with empty ext4 volumes for c=${c}..."
     compose_down
@@ -110,48 +131,23 @@ if [[ "${PLOT_ONLY}" -eq 0 ]]; then
     compose_down
   done
 
-  echo "==> [4/4] Phase B — Snapshot & Log-Rewrite Compaction Stall (snapshot-count=10000, 20,000 writes)"
-  compose_down
-  ETCD_BENCH_VERSION="${ETCD_VERSION}" SNAPSHOT_COUNT=10000 \
-    docker compose -p "${COMPOSE_PROJECT}" -f "${COMPOSE_FILE}" up -d etcd-1 etcd-2 etcd-3
-
-  PHASE_B_REL="_tmp_${ETCD_VERSION}_phase_b.json"
-  ETCD_BENCH_VERSION="${ETCD_VERSION}" SNAPSHOT_COUNT=10000 \
-    docker compose -p "${COMPOSE_PROJECT}" -f "${COMPOSE_FILE}" run --rm bench-client \
-      --mode=compaction \
-      --concurrency=64 \
-      --total-writes=20000 \
-      --rate-limit=1400 \
-      --sample-interval=100ms \
-      --key-space=1000 \
-      --value-size=256 \
-      --out="/results/${PHASE_B_REL}"
-
-  compose_down
-
   "${PYTHON_BIN}" "${SCRIPT_DIR}/merge_results.py" \
     --version "${ETCD_VERSION}" \
     --phase-a "${PHASE_A_FILES[@]}" \
-    --phase-b "${RESULTS_DIR}/${PHASE_B_REL}" \
     --out "${FINAL_JSON}"
 fi
 
-if [[ "${ETCD_VERSION}" == v0.4* ]]; then
-  SCALING_PNG="${PART1_DIR}/v04_concurrency_scaling.png"
-  COMPACTION_PNG="${PART1_DIR}/v04_compaction_stall.png"
-else
-  VER_SLUG="${ETCD_VERSION//./_}"
-  SCALING_PNG="${RESULTS_DIR}/${VER_SLUG}_concurrency_scaling.png"
-  COMPACTION_PNG="${RESULTS_DIR}/${VER_SLUG}_compaction_stall.png"
-fi
+VER_SLUG="${ETCD_VERSION//./_}"
+THROUGHPUT_PNG="${RESULTS_DIR}/${VER_SLUG}_write_throughput.png"
+LATENCY_PNG="${RESULTS_DIR}/${VER_SLUG}_write_latency.png"
 
 echo "==> Rendering benchmark figures from ${FINAL_JSON}"
 "${PYTHON_BIN}" "${SCRIPT_DIR}/plot_benchmarks.py" \
   --results "${FINAL_JSON}" \
-  --out-scaling "${SCALING_PNG}" \
-  --out-compaction "${COMPACTION_PNG}"
+  --out-throughput "${THROUGHPUT_PNG}" \
+  --out-latency "${LATENCY_PNG}"
 
 echo "==> Benchmark suite complete!"
 echo "    Raw results : ${FINAL_JSON}"
-echo "    Chart 1     : ${SCALING_PNG}"
-echo "    Chart 2     : ${COMPACTION_PNG}"
+echo "    Chart 1     : ${THROUGHPUT_PNG}"
+echo "    Chart 2     : ${LATENCY_PNG}"

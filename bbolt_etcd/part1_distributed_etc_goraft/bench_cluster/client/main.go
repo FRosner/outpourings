@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -45,11 +46,11 @@ type ConcurrencyRunResult struct {
 }
 
 type WriteSample struct {
-	WriteSeq   int     `json:"write_seq"`
-	RaftIndex  uint64  `json:"raft_index"`
-	StartMS    float64 `json:"start_ms"`
-	ElapsedMS  float64 `json:"elapsed_ms"`
-	LatencyMS  float64 `json:"latency_ms"`
+	WriteSeq  int     `json:"write_seq"`
+	RaftIndex uint64  `json:"raft_index"`
+	StartMS   float64 `json:"start_ms"`
+	ElapsedMS float64 `json:"elapsed_ms"`
+	LatencyMS float64 `json:"latency_ms"`
 }
 
 type DiskSample struct {
@@ -73,24 +74,27 @@ type SnapshotEvent struct {
 }
 
 type CompactionRunResult struct {
-	Concurrency           int             `json:"concurrency"`
-	TotalWrites           int             `json:"total_writes"`
-	RateLimitWPS          int             `json:"rate_limit_wps"`
-	LeaderName            string          `json:"leader_name"`
-	LeaderURL             string          `json:"leader_url"`
-	DurationSeconds       float64         `json:"duration_s"`
-	ThroughputWPS         float64         `json:"throughput_wps"`
-	Errors                uint64          `json:"errors"`
-	OverallLatencyMS      LatencySummary  `json:"overall_latency_ms"`
-	SteadyPreCompactMS    LatencySummary  `json:"steady_pre_compact_latency_ms"`
-	PeakLatencyMS         float64         `json:"peak_latency_ms"`
-	PeakLogBytes          int64           `json:"peak_log_bytes"`
-	PostCompactMinBytes   int64           `json:"post_compact_min_log_bytes"`
-	CompactionWriteSeq    uint64          `json:"compaction_write_seq"`
-	CompactionElapsedMS   float64         `json:"compaction_elapsed_ms"`
-	SnapshotEvents        []SnapshotEvent `json:"snapshot_events"`
-	DiskSamples           []DiskSample    `json:"disk_samples"`
-	Writes                []WriteSample   `json:"writes"`
+	Concurrency         int             `json:"concurrency"`
+	PreseedKeys         int             `json:"preseed_keys"`
+	PreseedValueBytes   int             `json:"preseed_value_bytes"`
+	TotalWrites         int             `json:"total_writes"`
+	RateLimitWPS        int             `json:"rate_limit_wps"`
+	LeaderName          string          `json:"leader_name"`
+	LeaderURL           string          `json:"leader_url"`
+	DurationSeconds     float64         `json:"duration_s"`
+	ThroughputWPS       float64         `json:"throughput_wps"`
+	Errors              uint64          `json:"errors"`
+	OverallLatencyMS    LatencySummary  `json:"overall_latency_ms"`
+	SteadyPreCompactMS  LatencySummary  `json:"steady_pre_compact_latency_ms"`
+	PeakLatencyMS       float64         `json:"peak_latency_ms"`
+	CompactionPeakMS    float64         `json:"compaction_peak_latency_ms"`
+	PeakLogBytes        int64           `json:"peak_log_bytes"`
+	PostCompactMinBytes int64           `json:"post_compact_min_log_bytes"`
+	CompactionWriteSeq  uint64          `json:"compaction_write_seq"`
+	CompactionElapsedMS float64         `json:"compaction_elapsed_ms"`
+	SnapshotEvents      []SnapshotEvent `json:"snapshot_events"`
+	DiskSamples         []DiskSample    `json:"disk_samples"`
+	Writes              []WriteSample   `json:"writes"`
 }
 
 type leaderStatsResp struct {
@@ -115,12 +119,15 @@ func newHTTPClient() *http.Client {
 	}
 }
 
-func buildPayloads(count int, valueSize int) [][]byte {
+func buildPayloads(count int, valueSize int, tag string) [][]byte {
 	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	payloads := make([][]byte, count)
 	for i := 0; i < count; i++ {
 		val := make([]byte, valueSize)
-		prefix := fmt.Sprintf("v%04d-", i)
+		prefix := fmt.Sprintf("%s%05d-", tag, i)
+		if len(prefix) > valueSize {
+			prefix = prefix[:valueSize]
+		}
 		copy(val, prefix)
 		for j := len(prefix); j < valueSize; j++ {
 			val[j] = alphabet[(i*31+j*17)%len(alphabet)]
@@ -130,11 +137,11 @@ func buildPayloads(count int, valueSize int) [][]byte {
 	return payloads
 }
 
-func buildKeyURLs(leaderURL string, keySpace int) []string {
+func buildKeyURLs(leaderURL string, prefix string, keySpace int) []string {
 	urls := make([]string, keySpace)
 	base := strings.TrimRight(leaderURL, "/")
 	for i := 0; i < keySpace; i++ {
-		urls[i] = fmt.Sprintf("%s/v2/keys/bench/key-%d", base, i)
+		urls[i] = fmt.Sprintf("%s/v2/keys/%s/key-%d", base, prefix, i)
 	}
 	return urls
 }
@@ -173,7 +180,6 @@ func discoverLeader(client *http.Client, endpoints []string, expectedMembers int
 			continue
 		}
 
-		// Verify all cluster members are registered.
 		mResp, err := client.Get(strings.TrimRight(endpoints[0], "/") + "/v2/machines")
 		if err != nil {
 			time.Sleep(150 * time.Millisecond)
@@ -197,7 +203,6 @@ func discoverLeader(client *http.Client, endpoints []string, expectedMembers int
 			continue
 		}
 
-		// Query /v2/stats/leader on every endpoint to find the active Raft leader.
 		for _, ep := range endpoints {
 			lResp, err := client.Get(strings.TrimRight(ep, "/") + "/v2/stats/leader")
 			if err != nil {
@@ -216,7 +221,6 @@ func discoverLeader(client *http.Client, endpoints []string, expectedMembers int
 				continue
 			}
 
-			// Verify 5 direct probe writes succeed without redirect.
 			probeOK := true
 			probeURL := strings.TrimRight(ep, "/") + "/v2/keys/bench/_probe"
 			for p := 0; p < 5; p++ {
@@ -314,7 +318,6 @@ func inspectDataDir(mountPath string) dirDiskState {
 		return st
 	}
 
-	// etcd v0.4.x layout: /var/lib/etcd/log, /var/lib/etcd/log.new, /var/lib/etcd/snapshot/*.ss
 	if info, err := os.Stat(filepath.Join(mountPath, "log")); err == nil {
 		st.logBytes = info.Size()
 	}
@@ -402,12 +405,12 @@ func runConcurrencyMode(
 	valueSize int,
 	outPath string,
 ) error {
-	payloads := buildPayloads(keySpace, valueSize)
+	payloads := buildPayloads(keySpace, valueSize, "v")
 	leaderName, leaderURL, err := discoverLeader(client, endpoints, len(endpoints), payloads[0])
 	if err != nil {
 		return err
 	}
-	keyURLs := buildKeyURLs(leaderURL, keySpace)
+	keyURLs := buildKeyURLs(leaderURL, "bench", keySpace)
 	fmt.Printf("[concurrency c=%d] leader=%s (%s), warmup=%s, measure=%s\n",
 		concurrency, leaderName, leaderURL, warmup, duration)
 
@@ -492,6 +495,8 @@ func runCompactionMode(
 	endpoints []string,
 	dataMounts string,
 	concurrency int,
+	preseedKeys int,
+	preseedValueSize int,
 	totalWrites int,
 	rateLimit int,
 	sampleInterval time.Duration,
@@ -499,29 +504,122 @@ func runCompactionMode(
 	valueSize int,
 	outPath string,
 ) error {
-	payloads := buildPayloads(keySpace, valueSize)
+	payloads := buildPayloads(keySpace, valueSize, "v")
 	leaderName, leaderURL, err := discoverLeader(client, endpoints, len(endpoints), payloads[0])
 	if err != nil {
 		return err
 	}
-	keyURLs := buildKeyURLs(leaderURL, keySpace)
-	fmt.Printf("[compaction] leader=%s (%s), c=%d, total_writes=%d, rate_limit=%d wps\n",
-		leaderName, leaderURL, concurrency, totalWrites, rateLimit)
+	keyURLs := buildKeyURLs(leaderURL, "bench", keySpace)
 
-	// Warm persistent keep-alive connections (2 requests per worker) so TCP setup does not skew write #1.
-	var warmWG sync.WaitGroup
-	warmWG.Add(concurrency)
-	for w := 0; w < concurrency; w++ {
-		wIdx := w
-		go func() {
-			defer warmWG.Done()
-			for i := 0; i < 2; i++ {
-				slot := (wIdx*2 + i) % keySpace
-				_, _ = doPut(client, keyURLs[slot], payloads[slot])
-			}
-		}()
+	nodeNames := make([]string, 0, len(endpoints))
+	for _, ep := range endpoints {
+		nodeNames = append(nodeNames, hostFromURL(ep))
 	}
-	warmWG.Wait()
+	leaderMount := filepath.Join(dataMounts, leaderName)
+
+	// Optional pre-seed phase: populate a realistic multi-MB store, let the initial post-seed
+	// snapshot/compaction settle on all 3 nodes so lastIndex resets to ~preseedKeys and /var/lib/etcd/log
+	// starts cleanly from its ~200-entry tail at t=0 of the measured trace.
+	baselineSnaps := make(map[string]bool)
+	if preseedKeys > 0 {
+		fmt.Printf("[compaction] pre-seeding %d keys x %d B (~%.1f MB) on leader=%s...\n",
+			preseedKeys, preseedValueSize, float64(preseedKeys*preseedValueSize)/(1024*1024), leaderName)
+		seedURLs := buildKeyURLs(leaderURL, "seed", preseedKeys)
+		seedPayloads := buildPayloads(256, preseedValueSize, "s")
+
+		seedWorkers := 128
+		var seedIdx uint64
+		var seedWG sync.WaitGroup
+		seedWG.Add(seedWorkers)
+		for w := 0; w < seedWorkers; w++ {
+			go func() {
+				defer seedWG.Done()
+				for {
+					idx := int(atomic.AddUint64(&seedIdx, 1)) - 1
+					if idx >= preseedKeys {
+						break
+					}
+					_, err := doPut(client, seedURLs[idx], seedPayloads[idx%len(seedPayloads)])
+					if err != nil {
+						// Retry once on transient error
+						_, _ = doPut(client, seedURLs[idx], seedPayloads[idx%len(seedPayloads)])
+					}
+				}
+			}()
+		}
+		seedWG.Wait()
+
+		// Warm persistent connections and push CommitIndex comfortably above 10,000 on all 3 replicas.
+		extraWarm := 128
+		if concurrency*2 > extraWarm {
+			extraWarm = concurrency * 2
+		}
+		var warmWG sync.WaitGroup
+		warmWG.Add(concurrency)
+		var warmSeq uint64
+		for w := 0; w < concurrency; w++ {
+			go func() {
+				defer warmWG.Done()
+				for {
+					k := int(atomic.AddUint64(&warmSeq, 1))
+					if k > extraWarm {
+						break
+					}
+					slot := k % keySpace
+					_, _ = doPut(client, keyURLs[slot], payloads[slot])
+				}
+			}()
+		}
+		warmWG.Wait()
+
+		// Wait until all 3 nodes finish their post-seed snapshot & compaction reset.
+		settleDeadline := time.Now().Add(20 * time.Second)
+		for time.Now().Before(settleDeadline) {
+			allSnapped := true
+			for _, n := range nodeNames {
+				nst := inspectDataDir(filepath.Join(dataMounts, n))
+				if len(nst.snapFiles) == 0 || nst.logNewExists {
+					allSnapped = false
+					break
+				}
+			}
+			lst := inspectDataDir(leaderMount)
+			// For v0.4.x, also verify leader's /var/lib/etcd/log compacted down below 2 MB.
+			if allSnapped && (lst.logBytes < 2*1024*1024 || strings.HasSuffix(lst.latestSnapshot, ".snap")) {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		syscall.Sync()
+		time.Sleep(1500 * time.Millisecond)
+
+		for _, n := range nodeNames {
+			nst := inspectDataDir(filepath.Join(dataMounts, n))
+			for fname := range nst.snapFiles {
+				baselineSnaps[n+":"+fname] = true
+			}
+		}
+		lst := inspectDataDir(leaderMount)
+		fmt.Printf("[compaction] pre-seed settled: leader log=%.2f MB, initial snapshot=%s (%.2f MB)\n",
+			float64(lst.logBytes)/(1024*1024), lst.latestSnapshot, float64(lst.latestSnapshotBytes)/(1024*1024))
+	} else {
+		var warmWG sync.WaitGroup
+		warmWG.Add(concurrency)
+		for w := 0; w < concurrency; w++ {
+			wIdx := w
+			go func() {
+				defer warmWG.Done()
+				for i := 0; i < 2; i++ {
+					slot := (wIdx*2 + i) % keySpace
+					_, _ = doPut(client, keyURLs[slot], payloads[slot])
+				}
+			}()
+		}
+		warmWG.Wait()
+	}
+
+	fmt.Printf("[compaction] starting measured trace: leader=%s, c=%d, total_writes=%d, rate_limit=%d wps\n",
+		leaderName, concurrency, totalWrites, rateLimit)
 
 	var minCycle time.Duration
 	if rateLimit > 0 {
@@ -539,12 +637,6 @@ func runCompactionMode(
 	var latestRaftIdx uint64
 	var errCount uint64
 
-	nodeNames := make([]string, 0, len(endpoints))
-	for _, ep := range endpoints {
-		nodeNames = append(nodeNames, hostFromURL(ep))
-	}
-	leaderMount := filepath.Join(dataMounts, leaderName)
-
 	phaseStart := time.Now()
 	stopSampler := make(chan struct{})
 	var samplerWG sync.WaitGroup
@@ -558,21 +650,36 @@ func runCompactionMode(
 		rIdx := atomic.LoadUint64(&latestRaftIdx)
 
 		st := inspectDataDir(leaderMount)
+		newSnapCount := 0
+		var newestMeasuredSnap string
+		var newestMeasuredBytes int64
+		for fname, sz := range st.snapFiles {
+			if !baselineSnaps[leaderName+":"+fname] {
+				newSnapCount++
+				if newestMeasuredSnap == "" || fname > newestMeasuredSnap {
+					newestMeasuredSnap = fname
+					newestMeasuredBytes = sz
+				}
+			}
+		}
 		diskSamples = append(diskSamples, DiskSample{
 			ElapsedMS:           round3(elapsedMS),
 			CompletedWrites:     comp,
 			LastRaftIndex:       rIdx,
 			LogBytes:            st.logBytes,
 			LogNewExists:        st.logNewExists,
-			SnapshotCount:       len(st.snapFiles),
-			LatestSnapshot:      st.latestSnapshot,
-			LatestSnapshotBytes: st.latestSnapshotBytes,
+			SnapshotCount:       newSnapCount,
+			LatestSnapshot:      newestMeasuredSnap,
+			LatestSnapshotBytes: newestMeasuredBytes,
 		})
 
 		for _, n := range nodeNames {
 			nst := inspectDataDir(filepath.Join(dataMounts, n))
 			for fname, sz := range nst.snapFiles {
 				key := n + ":" + fname
+				if baselineSnaps[key] {
+					continue
+				}
 				if idx, ok := seenSnaps[key]; !ok {
 					seenSnaps[key] = len(snapshotEvents)
 					snapshotEvents = append(snapshotEvents, SnapshotEvent{
@@ -705,11 +812,22 @@ func runCompactionMode(
 		postCompactMin = peakLog
 	}
 
+	var compactWindowPeak float64
+	for _, w := range allWrites {
+		if compactSeq > 0 && uint64(w.WriteSeq)+800 >= compactSeq && uint64(w.WriteSeq) <= compactSeq+800 {
+			if w.LatencyMS > compactWindowPeak {
+				compactWindowPeak = w.LatencyMS
+			}
+		}
+	}
+
 	overallSummary := summarizeLatencies(allLat)
 	preSummary := summarizeLatencies(preCompactLat)
 
 	res := CompactionRunResult{
 		Concurrency:         concurrency,
+		PreseedKeys:         preseedKeys,
+		PreseedValueBytes:   preseedValueSize,
 		TotalWrites:         len(allWrites),
 		RateLimitWPS:        rateLimit,
 		LeaderName:          leaderName,
@@ -720,6 +838,7 @@ func runCompactionMode(
 		OverallLatencyMS:    overallSummary,
 		SteadyPreCompactMS:  preSummary,
 		PeakLatencyMS:       overallSummary.Max,
+		CompactionPeakMS:    compactWindowPeak,
 		PeakLogBytes:        peakLog,
 		PostCompactMinBytes: postCompactMin,
 		CompactionWriteSeq:  compactSeq,
@@ -729,9 +848,9 @@ func runCompactionMode(
 		Writes:              allWrites,
 	}
 
-	fmt.Printf("[compaction] completed=%d in %.2fs (%.1f writes/s), pre-compact p50=%.2fms p99=%.2fms, peak=%.2fms, log %.2fMB -> %.2fMB at seq=%d (t=%.2fs), snap_events=%d\n",
+	fmt.Printf("[compaction] completed=%d in %.2fs (%.1f writes/s), pre-compact p50=%.2fms p99=%.2fms, compact_peak=%.2fms (overall_max=%.2fms), log %.2fMB -> %.2fMB at seq=%d (t=%.2fs), snap_events=%d\n",
 		res.TotalWrites, res.DurationSeconds, res.ThroughputWPS,
-		res.SteadyPreCompactMS.P50, res.SteadyPreCompactMS.P99, res.PeakLatencyMS,
+		res.SteadyPreCompactMS.P50, res.SteadyPreCompactMS.P99, res.CompactionPeakMS, res.PeakLatencyMS,
 		float64(res.PeakLogBytes)/(1024*1024), float64(res.PostCompactMinBytes)/(1024*1024),
 		res.CompactionWriteSeq, res.CompactionElapsedMS/1000.0, len(res.SnapshotEvents))
 
@@ -756,9 +875,11 @@ func main() {
 	concurrency := flag.Int("concurrency", 16, "Number of concurrent client workers")
 	warmup := flag.Duration("warmup", 3*time.Second, "Warmup duration (concurrency mode)")
 	duration := flag.Duration("duration", 15*time.Second, "Measurement window duration (concurrency mode)")
+	preseedKeys := flag.Int("preseed-keys", 10000, "Number of seed keys populated before compaction trace (0 to disable)")
+	preseedValueSize := flag.Int("preseed-value-size", 1024, "Payload size in bytes for pre-seeded keys")
 	totalWrites := flag.Int("total-writes", 20000, "Total measured writes (compaction mode)")
-	rateLimit := flag.Int("rate-limit", 1400, "Aggregate write rate cap in writes/sec for compaction mode (0 = unlimited)")
-	sampleInterval := flag.Duration("sample-interval", 100*time.Millisecond, "Leader disk sampling interval (compaction mode)")
+	rateLimit := flag.Int("rate-limit", 0, "Aggregate write rate cap in writes/sec for compaction mode (0 = unlimited)")
+	sampleInterval := flag.Duration("sample-interval", 50*time.Millisecond, "Leader disk sampling interval (compaction mode)")
 	keySpace := flag.Int("key-space", 1000, "Number of distinct keys (/v2/keys/bench/key-<i % keySpace>)")
 	valueSize := flag.Int("value-size", 256, "Deterministic payload size in bytes")
 	outPath := flag.String("out", "/results/run.json", "Output JSON path")
@@ -776,7 +897,7 @@ func main() {
 	case "concurrency":
 		err = runConcurrencyMode(client, endpoints, *dataMounts, *concurrency, *warmup, *duration, *keySpace, *valueSize, *outPath)
 	case "compaction":
-		err = runCompactionMode(client, endpoints, *dataMounts, *concurrency, *totalWrites, *rateLimit, *sampleInterval, *keySpace, *valueSize, *outPath)
+		err = runCompactionMode(client, endpoints, *dataMounts, *concurrency, *preseedKeys, *preseedValueSize, *totalWrites, *rateLimit, *sampleInterval, *keySpace, *valueSize, *outPath)
 	default:
 		err = fmt.Errorf("unknown --mode %q (expected concurrency or compaction)", *mode)
 	}

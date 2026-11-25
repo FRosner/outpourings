@@ -4,7 +4,7 @@ services:
     platform: linux/amd64
     hostname: etcd-1
     container_name: etcd-bench-1
-    cpus: 1.0
+    cpuset: "${CPUSET_ETCD1:-0}"
     mem_limit: 512m
     environment:
       NODE_NAME: etcd-1
@@ -21,7 +21,7 @@ services:
     platform: linux/amd64
     hostname: etcd-2
     container_name: etcd-bench-2
-    cpus: 1.0
+    cpuset: "${CPUSET_ETCD2:-1}"
     mem_limit: 512m
     environment:
       NODE_NAME: etcd-2
@@ -38,7 +38,7 @@ services:
     platform: linux/amd64
     hostname: etcd-3
     container_name: etcd-bench-3
-    cpus: 1.0
+    cpuset: "${CPUSET_ETCD3:-2}"
     mem_limit: 512m
     environment:
       NODE_NAME: etcd-3
@@ -55,7 +55,7 @@ services:
     platform: linux/amd64
     hostname: bench-client
     container_name: etcd-bench-client
-    cpus: 2.0
+    cpuset: "${CPUSET_CLIENT:-3,4}"
     mem_limit: 1g
     environment:
       GOMAXPROCS: "2"
