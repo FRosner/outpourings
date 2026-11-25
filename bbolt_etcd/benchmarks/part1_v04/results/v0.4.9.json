@@ -1,0 +1,228 @@
+{
+  "version": "v0.4.9",
+  "generated_at_utc": "2026-11-25T20:48:14Z",
+  "environment": {
+    "topology": "3x etcd nodes + 1x bench-client on isolated Docker bridge network",
+    "container_platform": "linux/amd64",
+    "etcd_resources": {
+      "cpuset": "1 dedicated core per node (GOMAXPROCS=1)",
+      "mem_limit": "512m",
+      "storage": "tmpfs (256m per node, isolating consensus/locking from single-host disk contention)"
+    },
+    "client_resources": {
+      "cpuset": "2 dedicated cores (GOMAXPROCS=2)",
+      "mem_limit": "1g"
+    },
+    "host_arch": "x86_64",
+    "workload": {
+      "endpoint": "PUT /v2/keys/bench/key-<i % 1000> (direct to Raft leader, HTTP keep-alive)",
+      "key_space": 1000,
+      "value_bytes": 256
+    }
+  },
+  "experiment1_concurrency_scaling": {
+    "snapshot_count": 2000000,
+    "warmup_seconds": 3,
+    "measurement_seconds": 15,
+    "runs": [
+      {
+        "concurrency": 1,
+        "warmup_s": 3,
+        "duration_s": 15,
+        "leader_name": "etcd-1",
+        "leader_url": "http://etcd-1:4001",
+        "completed_writes": 331,
+        "errors": 0,
+        "throughput_wps": 22.067,
+        "latency_ms": {
+          "min": 1.116,
+          "mean": 45.314,
+          "stdev": 15.032,
+          "p50": 49.647,
+          "p90": 50.974,
+          "p95": 51.737,
+          "p99": 52.81,
+          "max": 138.506
+        },
+        "final_log_bytes": 151317,
+        "snapshots_during_run": 0
+      },
+      {
+        "concurrency": 2,
+        "warmup_s": 3,
+        "duration_s": 15,
+        "leader_name": "etcd-1",
+        "leader_url": "http://etcd-1:4001",
+        "completed_writes": 696,
+        "errors": 0,
+        "throughput_wps": 46.4,
+        "latency_ms": {
+          "min": 0.981,
+          "mean": 43.102,
+          "stdev": 18.079,
+          "p50": 49.438,
+          "p90": 50.66,
+          "p95": 50.887,
+          "p99": 51.711,
+          "max": 173.733
+        },
+        "final_log_bytes": 464074,
+        "snapshots_during_run": 0
+      },
+      {
+        "concurrency": 4,
+        "warmup_s": 3,
+        "duration_s": 15,
+        "leader_name": "etcd-1",
+        "leader_url": "http://etcd-1:4001",
+        "completed_writes": 1306,
+        "errors": 0,
+        "throughput_wps": 87.067,
+        "latency_ms": {
+          "min": 1.069,
+          "mean": 45.866,
+          "stdev": 14.953,
+          "p50": 49.694,
+          "p90": 50.829,
+          "p95": 51.164,
+          "p99": 52.396,
+          "max": 157.464
+        },
+        "final_log_bytes": 1044632,
+        "snapshots_during_run": 0
+      },
+      {
+        "concurrency": 8,
+        "warmup_s": 3,
+        "duration_s": 15,
+        "leader_name": "etcd-1",
+        "leader_url": "http://etcd-1:4001",
+        "completed_writes": 2457,
+        "errors": 0,
+        "throughput_wps": 163.8,
+        "latency_ms": {
+          "min": 0.977,
+          "mean": 48.839,
+          "stdev": 9.677,
+          "p50": 49.893,
+          "p90": 50.975,
+          "p95": 51.38,
+          "p99": 52.793,
+          "max": 140.66
+        },
+        "final_log_bytes": 2131835,
+        "snapshots_during_run": 0
+      },
+      {
+        "concurrency": 16,
+        "warmup_s": 3,
+        "duration_s": 15,
+        "leader_name": "etcd-1",
+        "leader_url": "http://etcd-1:4001",
+        "completed_writes": 4753,
+        "errors": 0,
+        "throughput_wps": 316.867,
+        "latency_ms": {
+          "min": 3.408,
+          "mean": 50.517,
+          "stdev": 9.822,
+          "p50": 49.999,
+          "p90": 51.507,
+          "p95": 52.205,
+          "p99": 54.527,
+          "max": 170.101
+        },
+        "final_log_bytes": 4235737,
+        "snapshots_during_run": 0
+      },
+      {
+        "concurrency": 32,
+        "warmup_s": 3,
+        "duration_s": 15,
+        "leader_name": "etcd-1",
+        "leader_url": "http://etcd-1:4001",
+        "completed_writes": 9536,
+        "errors": 0,
+        "throughput_wps": 635.733,
+        "latency_ms": {
+          "min": 31.353,
+          "mean": 50.332,
+          "stdev": 6.664,
+          "p50": 49.977,
+          "p90": 52.712,
+          "p95": 53.908,
+          "p99": 58.292,
+          "max": 158.951
+        },
+        "final_log_bytes": 8461960,
+        "snapshots_during_run": 0
+      },
+      {
+        "concurrency": 64,
+        "warmup_s": 3,
+        "duration_s": 15,
+        "leader_name": "etcd-1",
+        "leader_url": "http://etcd-1:4001",
+        "completed_writes": 19245,
+        "errors": 0,
+        "throughput_wps": 1283,
+        "latency_ms": {
+          "min": 24.883,
+          "mean": 50.001,
+          "stdev": 4.096,
+          "p50": 49.975,
+          "p90": 54.082,
+          "p95": 55.803,
+          "p99": 62.636,
+          "max": 76.372
+        },
+        "final_log_bytes": 16956240,
+        "snapshots_during_run": 0
+      },
+      {
+        "concurrency": 128,
+        "warmup_s": 3,
+        "duration_s": 15,
+        "leader_name": "etcd-1",
+        "leader_url": "http://etcd-1:4001",
+        "completed_writes": 37947,
+        "errors": 0,
+        "throughput_wps": 2529.8,
+        "latency_ms": {
+          "min": 8.456,
+          "mean": 50.632,
+          "stdev": 10.867,
+          "p50": 49.8,
+          "p90": 58.186,
+          "p95": 60.906,
+          "p99": 78.996,
+          "max": 175.801
+        },
+        "final_log_bytes": 33691718,
+        "snapshots_during_run": 0
+      },
+      {
+        "concurrency": 256,
+        "warmup_s": 3,
+        "duration_s": 15,
+        "leader_name": "etcd-1",
+        "leader_url": "http://etcd-1:4001",
+        "completed_writes": 71321,
+        "errors": 0,
+        "throughput_wps": 4754.733,
+        "latency_ms": {
+          "min": 16.254,
+          "mean": 53.84,
+          "stdev": 14.366,
+          "p50": 51.027,
+          "p90": 64.689,
+          "p95": 85.078,
+          "p99": 116.521,
+          "max": 165.484
+        },
+        "final_log_bytes": 65073906,
+        "snapshots_during_run": 0
+      }
+    ]
+  }
+}

@@ -1,0 +1,140 @@
+{
+  "version": "v2.3.8",
+  "generated_at_utc": "2026-11-25T20:00:21Z",
+  "environment": {
+    "topology": "3x etcd nodes + 1x bench-client on isolated Docker bridge network",
+    "container_platform": "linux/amd64",
+    "etcd_resources": {
+      "cpuset": "1 dedicated core per node (GOMAXPROCS=1)",
+      "mem_limit": "512m",
+      "storage": "Docker named volume (Linux ext4)"
+    },
+    "client_resources": {
+      "cpuset": "2 dedicated cores (GOMAXPROCS=2)",
+      "mem_limit": "1g"
+    },
+    "host_arch": "x86_64",
+    "workload": {
+      "endpoint": "PUT /v2/keys/bench/key-<i % 1000> (direct to Raft leader, HTTP keep-alive)",
+      "key_space": 1000,
+      "value_bytes": 256
+    }
+  },
+  "experiment1_concurrency_scaling": {
+    "snapshot_count": 1000000,
+    "warmup_seconds": 3,
+    "measurement_seconds": 15,
+    "runs": [
+      {
+        "concurrency": 1,
+        "warmup_s": 3,
+        "duration_s": 15,
+        "leader_name": "etcd-3",
+        "leader_url": "http://etcd-3:4001",
+        "completed_writes": 3975,
+        "errors": 0,
+        "throughput_wps": 265,
+        "latency_ms": {
+          "min": 2.05,
+          "mean": 3.773,
+          "stdev": 2.837,
+          "p50": 3.517,
+          "p90": 4.662,
+          "p95": 5.277,
+          "p99": 7.061,
+          "max": 101.46
+        },
+        "final_log_bytes": 1827301,
+        "snapshots_during_run": 0
+      },
+      {
+        "concurrency": 4,
+        "warmup_s": 3,
+        "duration_s": 15,
+        "leader_name": "etcd-3",
+        "leader_url": "http://etcd-3:4001",
+        "completed_writes": 6351,
+        "errors": 0,
+        "throughput_wps": 423.4,
+        "latency_ms": {
+          "min": 3.766,
+          "mean": 9.446,
+          "stdev": 6.887,
+          "p50": 8.197,
+          "p90": 12.334,
+          "p95": 14.626,
+          "p99": 24.962,
+          "max": 167.616
+        },
+        "final_log_bytes": 2914156,
+        "snapshots_during_run": 0
+      },
+      {
+        "concurrency": 16,
+        "warmup_s": 3,
+        "duration_s": 15,
+        "leader_name": "etcd-3",
+        "leader_url": "http://etcd-3:4001",
+        "completed_writes": 25554,
+        "errors": 0,
+        "throughput_wps": 1703.6,
+        "latency_ms": {
+          "min": 4.008,
+          "mean": 9.391,
+          "stdev": 3.252,
+          "p50": 8.791,
+          "p90": 12.18,
+          "p95": 13.755,
+          "p99": 16.868,
+          "max": 108.689
+        },
+        "final_log_bytes": 10687892,
+        "snapshots_during_run": 0
+      },
+      {
+        "concurrency": 64,
+        "warmup_s": 3,
+        "duration_s": 15,
+        "leader_name": "etcd-3",
+        "leader_url": "http://etcd-3:4001",
+        "completed_writes": 36353,
+        "errors": 0,
+        "throughput_wps": 2423.533,
+        "latency_ms": {
+          "min": 3.76,
+          "mean": 26.4,
+          "stdev": 8.24,
+          "p50": 25.664,
+          "p90": 37.191,
+          "p95": 41.485,
+          "p99": 50.509,
+          "max": 64.841
+        },
+        "final_log_bytes": 16159597,
+        "snapshots_during_run": 0
+      },
+      {
+        "concurrency": 256,
+        "warmup_s": 3,
+        "duration_s": 15,
+        "leader_name": "etcd-3",
+        "leader_url": "http://etcd-3:4001",
+        "completed_writes": 56219,
+        "errors": 0,
+        "throughput_wps": 3747.933,
+        "latency_ms": {
+          "min": 12.178,
+          "mean": 68.342,
+          "stdev": 17.44,
+          "p50": 67.049,
+          "p90": 90.767,
+          "p95": 99.547,
+          "p99": 118.835,
+          "max": 151.593
+        },
+        "final_log_bytes": 23428953,
+        "snapshots_during_run": 0
+      }
+    ]
+  }
+}

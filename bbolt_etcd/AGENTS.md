@@ -46,4 +46,4 @@ All primary and comparison repositories are cloned locally under `/Users/frosner
 ## Animations & Reproducible Experiments
 
 * **Animations:** Place Python animation scripts and rendered assets (`.webp` embedded in `blog_post.md`) directly inside the corresponding `part*/` folder. Use `matplotlib`, `numpy`, `pillow`, and `imageio`/`imageio-ffmpeg` (see `../tcp_buffers/pyproject.toml` and `../tcp_buffers/animate_tcp_buffers.py` for the established style and setup).
-* **Benchmarks / Demos:** Place reproducible Go benchmarks or demo harnesses inside the corresponding `part*/` folder so readers can run them standalone.
+* **Benchmarks / Demos:** Shared cross-part benchmark harnesses live under `benchmarks/` (`benchmarks/common/` for the shared setup & plotting, and `benchmarks/part*/run.sh` for isolated per-part execution and results). Copy final chart PNGs explicitly into the corresponding `part*/` folder so re-running benchmarks never silently mutates published posts.

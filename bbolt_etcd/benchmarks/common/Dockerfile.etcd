@@ -5,6 +5,10 @@ ENV GO111MODULE=off \
 
 WORKDIR /src/etcd
 ADD .build_src/etcd-src.tar /src/etcd/
+# Go 1.22 rejects duplicate alphabet chars in base64.NewEncoding; patch vendored ugorji/codec codegen init in etcd v2.x
+RUN if [ -f Godeps/_workspace/src/github.com/ugorji/go/codec/gen.go ]; then \
+      sed -i 's/0123456789__/0123456789_-/' Godeps/_workspace/src/github.com/ugorji/go/codec/gen.go; \
+    fi
 RUN chmod +x ./build && ./build
 
 FROM debian:bookworm-slim

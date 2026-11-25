@@ -14,6 +14,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Merge steady-state concurrency benchmark outputs.")
     parser.add_argument("--version", required=True, help="etcd version tag, e.g. v0.4.9")
     parser.add_argument("--phase-a", nargs="+", required=True, help="Paths to concurrency JSON files")
+    parser.add_argument("--snapshot-count", type=int, default=1000000, help="Configured snapshot-count during run")
     parser.add_argument("--out", required=True, help="Destination combined JSON path")
     args = parser.parse_args()
 
@@ -32,7 +33,7 @@ def main() -> None:
             "etcd_resources": {
                 "cpuset": "1 dedicated core per node (GOMAXPROCS=1)",
                 "mem_limit": "512m",
-                "storage": "Docker named volume (Linux ext4)",
+                "storage": "tmpfs (256m per node, isolating consensus/locking from single-host disk contention)",
             },
             "client_resources": {"cpuset": "2 dedicated cores (GOMAXPROCS=2)", "mem_limit": "1g"},
             "host_arch": platform.machine(),
@@ -43,7 +44,7 @@ def main() -> None:
             },
         },
         "experiment1_concurrency_scaling": {
-            "snapshot_count": 100000,
+            "snapshot_count": args.snapshot_count,
             "warmup_seconds": phase_a_runs[0]["warmup_s"] if phase_a_runs else 3.0,
             "measurement_seconds": phase_a_runs[0]["duration_s"] if phase_a_runs else 15.0,
             "runs": phase_a_runs,

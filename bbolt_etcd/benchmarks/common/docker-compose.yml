@@ -5,11 +5,11 @@ services:
     hostname: etcd-1
     container_name: etcd-bench-1
     cpuset: "${CPUSET_ETCD1:-0}"
-    mem_limit: 512m
+    mem_limit: 1g
     environment:
       NODE_NAME: etcd-1
       ETCD_BENCH_VERSION: ${ETCD_BENCH_VERSION:-v0.4.9}
-      SNAPSHOT_COUNT: ${SNAPSHOT_COUNT:-10000}
+      SNAPSHOT_COUNT: ${SNAPSHOT_COUNT:-2000000}
       GOMAXPROCS: "1"
     volumes:
       - etcd1-data:/var/lib/etcd
@@ -22,11 +22,11 @@ services:
     hostname: etcd-2
     container_name: etcd-bench-2
     cpuset: "${CPUSET_ETCD2:-1}"
-    mem_limit: 512m
+    mem_limit: 1g
     environment:
       NODE_NAME: etcd-2
       ETCD_BENCH_VERSION: ${ETCD_BENCH_VERSION:-v0.4.9}
-      SNAPSHOT_COUNT: ${SNAPSHOT_COUNT:-10000}
+      SNAPSHOT_COUNT: ${SNAPSHOT_COUNT:-2000000}
       GOMAXPROCS: "1"
     volumes:
       - etcd2-data:/var/lib/etcd
@@ -39,11 +39,11 @@ services:
     hostname: etcd-3
     container_name: etcd-bench-3
     cpuset: "${CPUSET_ETCD3:-2}"
-    mem_limit: 512m
+    mem_limit: 1g
     environment:
       NODE_NAME: etcd-3
       ETCD_BENCH_VERSION: ${ETCD_BENCH_VERSION:-v0.4.9}
-      SNAPSHOT_COUNT: ${SNAPSHOT_COUNT:-10000}
+      SNAPSHOT_COUNT: ${SNAPSHOT_COUNT:-2000000}
       GOMAXPROCS: "1"
     volumes:
       - etcd3-data:/var/lib/etcd
@@ -67,14 +67,29 @@ services:
       - etcd1-data:/mnt/etcd-1:ro
       - etcd2-data:/mnt/etcd-2:ro
       - etcd3-data:/mnt/etcd-3:ro
-      - ./results:/results
+      - ${RESULTS_DIR:?RESULTS_DIR must be set}:/results
     networks:
       - etcd_bench_net
 
 volumes:
   etcd1-data:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=768m
   etcd2-data:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=768m
   etcd3-data:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=768m
 
 networks:
   etcd_bench_net:
