@@ -27,9 +27,9 @@ All primary and comparison repositories are cloned locally under `/Users/frosner
 
 | Local Path | Upstream Repo | Purpose & Notes | Relevant Parts |
 | :--- | :--- | :--- | :--- |
-| `/Users/frosner/Documents/etcd` | `etcd-io/etcd` | Primary `etcd` source across all eras (`v0.1`–`v3.7` via git tags: `store`/`v2store`, `etcd/raft`, `wal`, `snap`, `mvcc`, `treeIndex`, `backend`). | All Parts |
-| `/Users/frosner/Documents/goraft` | `goraft/raft` | Ben Johnson's original Go Raft library used by `etcd v0.1–v0.4` (transport/disk/state-machine coupling and locking). | Part 1 |
-| `/Users/frosner/Documents/locksmith` | `coreos/locksmith` | CoreOS distributed reboot semaphore using `etcd` CAS + TTL + watches. | Part 1 |
+| `/Users/frosner/Documents/etcd` | `etcd-io/etcd` | Primary `etcd` source across all eras (`v0.1`–`v3.7` via git tags: `store`/`v2store`, `EventHistory`, JSON snapshots, `server/`, `etcd/raft`, `wal`, `snap`, `mvcc`, `treeIndex`, `backend`). Note: `v0.4.x` also vendors `goraft` under `third_party/github.com/goraft/raft`. | All Parts |
+| `/Users/frosner/Documents/goraft` | `goraft/raft` | Ben Johnson's original Go Raft library used by `etcd v0.1–v0.4` (coupling of transport, disk I/O, timers, state machine, and locking). | Part 1 |
+| `/Users/frosner/Documents/locksmith` | `coreos/locksmith` | CoreOS distributed reboot semaphore using `etcd` `CompareAndSwap` (`prevIndex`) **without** TTL or watches (retried via exponential backoff so a rebooting host keeps the lock while powered off). | Part 1 |
 | `/Users/frosner/Documents/fleet` | `coreos/fleet` | CoreOS distributed `systemd` scheduler storing unit state in early `etcd`. | Part 1 |
 | `/Users/frosner/Documents/raft` | `etcd-io/raft` | Modern decoupled `etcd/raft` state-machine library (contrasted against `goraft`). | Parts 2+ |
 | `/Users/frosner/Documents/bolt` | `boltdb/bolt` | Original archived BoltDB by Ben Johnson (pre-fork code and `array` freelist). | Parts 3–4 |
@@ -45,5 +45,5 @@ All primary and comparison repositories are cloned locally under `/Users/frosner
 
 ## Animations & Reproducible Experiments
 
-* **Animations:** Place Python animation scripts and rendered assets (`.webp` embedded in `blog_post.md`) directly inside the corresponding `part*/` folder. Use `matplotlib`, `numpy`, `pillow`, and `imageio`/`imageio-ffmpeg` (see `../tcp_buffers/pyproject.toml` and `../tcp_buffers/animate_tcp_buffers.py` for the established style and setup).
+* **Animations:** Place Python animation packages (`pyproject.toml`, `animations/common.py`, `animations/render.py`, and per-diagram modules) and rendered `.webp` assets (embedded directly in `blog_post.md`) inside the corresponding `part*/` folder. Use `matplotlib`, `numpy`, `pillow`, and `imageio`/`imageio-ffmpeg` — see `part1_distributed_etc_goraft/pyproject.toml` and `part1_distributed_etc_goraft/animations/` for the established modular style and CLI runner (derived from `../tcp_buffers/`).
 * **Benchmarks / Demos:** Shared cross-part benchmark harnesses live under `benchmarks/` (`benchmarks/common/` for the shared setup & plotting, and `benchmarks/part*/run.sh` for isolated per-part execution and results). Copy final chart PNGs explicitly into the corresponding `part*/` folder so re-running benchmarks never silently mutates published posts.

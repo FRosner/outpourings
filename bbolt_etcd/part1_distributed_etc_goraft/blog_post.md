@@ -6,23 +6,6 @@ tags: etcd, distributedsystems, databases, storage
 series: The Evolution of etcd Storage
 ---
 
-<!--
-Series & Authoring Notes (remove before publishing):
-- Audience: Systems / database enthusiasts interested in the broader lesson of how changing workloads reshape storage engines.
-- Tone: Deeply technical, structured, and educative (self-contained post that bridges naturally into Part 2).
-- Shared research notes:
-  - ../etcd_storage_history.md (Phase 1: v0.1 – v0.4.x)
-  - ../coreos_history.md (Motivating slice: Container Linux A/B updates, locksmith, fleet)
-- Local source repositories for code archaeology:
-  - ~/Documents/etcd (inspect v0.4.x git tags for `store/`, `server/`, `EventHistory`, JSON snapshots)
-  - ~/Documents/goraft (`goraft/raft` — coupling of transport, disk I/O, timers, state machine, locking)
-  - ~/Documents/locksmith (`coreos/locksmith` — concrete reboot semaphore example using CAS + TTL)
-  - ~/Documents/fleet (`coreos/fleet` — optional secondary CoreOS example)
-- Animations:
-  - Use Python (`matplotlib`, `numpy`, `pillow`, `imageio`, `imageio-ffmpeg`) to render `.webp` animations embedded directly in this post.
-  - See ../../tcp_buffers/pyproject.toml and ../../tcp_buffers/animate_tcp_buffers.py for the established project style and setup.
--->
-
 ## Motivation & Series Roadmap
 
 Storage engines are not designed in a vacuum; they are mirrors of the workloads they serve. Today `etcd` is best known as Kubernetes's disk-backed control-plane store, yet it began in 2013 as something radically simpler—an in-memory hierarchical directory tree serialized to JSON.
