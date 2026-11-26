@@ -1,8 +1,9 @@
 ---
-title: "The Evolution of etcd Storage (Part 1): When a Distributed /etc Fit in RAM (v0.1 – v0.4)"
+title: "The Evolution of etcd Storage: A Distributed /etc in RAM (v0.1 – v0.4)"
 published: false
 description: "TBD — How CoreOS's small-config workload shaped etcd's earliest storage engine: an in-memory directory tree, goraft consensus, JSON snapshots, and the cracks that led to etcd v2."
 tags: etcd, distributedsystems, databases, storage
+series: The Evolution of etcd Storage
 ---
 
 <!--
@@ -24,15 +25,11 @@ Series & Authoring Notes (remove before publishing):
 
 ## Motivation & Series Roadmap
 
-TBD — Hook for systems and database enthusiasts: storage engines are not designed in a vacuum; they are mirrors of the workloads they serve. Today `etcd` is best known as Kubernetes's disk-backed `bbolt` control-plane store, yet it began in 2013 as something radically simpler—an in-memory hierarchical directory tree serialized to JSON.
+Storage engines are not designed in a vacuum; they are mirrors of the workloads they serve. Today `etcd` is best known as Kubernetes's disk-backed control-plane store, yet it began in 2013 as something radically simpler—an in-memory hierarchical directory tree serialized to JSON.
 
-Introduce the 5-part series roadmap (with Part 1 fully self-contained):
+In this series, we will trace how real-world adoption reshaped `etcd`'s storage layer over time. This first post starts at the beginning, when small CoreOS config trees made keeping everything in memory the obvious choice. Later on, we will cover the first major reliability overhaul, the moment Kubernetes arrived and broke those early assumptions, and the move to a disk-backed engine built on BoltDB. From there, we will get into the scaling bottlenecks that led the team to fork BoltDB into `bbolt` and become database maintainers themselves, before bringing the story to the present to see how `etcd` finally left its early design behind and what might come after `bbolt`.
 
-1. **Part 1 (this post):** The Distributed `/etc` & `goraft` Era (`v0.1 – v0.4.x`, 2013–2014)
-2. **Part 2:** The `etcd/raft` Rewrite & Hitting the Kubernetes Wall (`v2.0 – v2.3`, 2015)
-3. **Part 3:** The `v3` Rewrite & Entering BoltDB (`v3.0 – v3.2`, 2016–2017)
-4. **Part 4:** Forking `bbolt` & Scaling to Large Clusters (`v3.3 – v3.5`, 2018–2021)
-5. **Part 5:** Retiring `v2store`, Modern Efficiency & Life Beyond `bbolt` (`v3.6 – v3.7` & Alternatives, 2025–2026)
+In Part 1, we rewind to `etcd v0.1` through `v0.4` (2013–2014). We will look at the original CoreOS workload, inspect the Go code behind its in-memory store and early Raft persistence, and benchmark a 3-node cluster to measure its throughput and latency limits.
 
 ## The 2013 Workload: Why CoreOS Needed a Distributed `/etc`
 
