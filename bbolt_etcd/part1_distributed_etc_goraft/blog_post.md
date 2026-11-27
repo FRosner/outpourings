@@ -1,6 +1,6 @@
 ---
 title: "The Evolution of etcd Storage: A Distributed /etc in RAM (v0.1 - v0.4)"
-published: false
+published: true
 description: "How CoreOS's small-config workload shaped etcd's earliest storage engine: an in-memory directory tree, goraft consensus, JSON snapshots, and the limitations that led to etcd v2."
 tags: etcd, distributedsystems, databases, storage
 series: The Evolution of etcd Storage
@@ -478,13 +478,11 @@ To see both bottlenecks in practice, we benchmarked steady-state `/v2/keys` writ
 
 [![etcd v0.4.9 Steady-State Write Throughput](https://raw.githubusercontent.com/FRosner/outpourings/master/bbolt_etcd/part1_distributed_etc_goraft/v04_write_throughput.png)](https://raw.githubusercontent.com/FRosner/outpourings/master/bbolt_etcd/part1_distributed_etc_goraft/v04_write_throughput.png)
 
-At `c = 1`, sequential writes align with `goraft`'s `50 ms` `Peer.heartbeat()` interval (`p50 = 49.7 ms`, `p99 = 52.8 ms`), capping throughput at `22.1 writes/s`. Increasing concurrency lets multiple appends accumulate in `/var/lib/etcd/log` during one heartbeat sleep and flush together in the next `AppendEntries` request.
-
-As a result, throughput scales steadily through `87.1 writes/s` (`c = 4`), `317 writes/s` (`c = 16`), `636 writes/s` (`c = 32`), `1,283 writes/s` (`c = 64`), and `2,530 writes/s` (`c = 128`). By `c = 256`, however, the curve drops below the dashed ideal linear line at `4,755 writes/s` (`215×` the `c = 1` rate for `256×` concurrency), as writers saturate the leader's single core behind `Log.mutex` and unbatched per-entry `Seek`/`Write` syscalls.
+At `c = 1`, sequential writes align with `goraft`'s `50 ms` `Peer.heartbeat()` interval, keeping single-client throughput near the 20 writes/s ceiling. As concurrency increases, multiple appends accumulate in `/var/lib/etcd/log` during each heartbeat sleep and flush together in the next `AppendEntries` request, so throughput initially scales close to linearly. At the highest concurrency (`c = 256`), the curve drops below the dashed ideal linear line as writers saturate the leader's single core behind `Log.mutex` and unbatched per-entry `Seek`/`Write` syscalls.
 
 [![etcd v0.4.9 Steady-State Write Latency](https://raw.githubusercontent.com/FRosner/outpourings/master/bbolt_etcd/part1_distributed_etc_goraft/v04_write_latency.png)](https://raw.githubusercontent.com/FRosner/outpourings/master/bbolt_etcd/part1_distributed_etc_goraft/v04_write_latency.png)
 
-Per-request latency confirms both bottlenecks. Across the entire sweep from `c = 1` to `c = 256`, median latency stays flat at the `50 ms` heartbeat interval (`49.4-51.0 ms`). Meanwhile, `p99` tail latency climbs steadily as batches grow, rising from `53 ms` (`c = 1`) through `58 ms` (`c = 32`), `63 ms` (`c = 64`), and `79 ms` (`c = 128`) up to `117 ms` (`c = 256`). At `c = 256`, tail latency exceeds two full heartbeat cycles as writers queue behind serialized log appends and commits.
+Per-request latency confirms both bottlenecks. Across the entire concurrency sweep, median latency (`p50`) remains flat at the `50 ms` heartbeat interval. Meanwhile, `p99` tail latency climbs steadily as batches grow and eventually exceeds two full heartbeat cycles at `c = 256`, as writers queue behind serialized log appends and commits.
 
 **Stop-the-world snapshot and log-rewrite stalls.** These steady-state numbers only hold while `/var/lib/etcd/log` appends uninterrupted. Every `10,000` commits (`snapshot_count`), `PeerServer.monitorSnapshot()` triggers `TakeSnapshot()`, adding a third bottleneck to the write path.
 
