@@ -28,7 +28,7 @@ Consider a small CoreOS cluster running a 3-replica `web` service behind an `ngi
 
 The core design principle of the early CoreOS stack was hub-and-spoke coordination. Daemons on worker machines did not talk directly to each other: schedulers did not open RPC connections to worker agents, and update daemons did not use gossip protocols. Instead, every component only read from and wrote to `etcd`'s shared directory tree:
 
-![How a CoreOS Cluster Bootstraps Around etcd](./coreos_cluster_bootstrap.webp)
+[![How a CoreOS Cluster Bootstraps Around etcd](https://raw.githubusercontent.com/FRosner/outpourings/master/bbolt_etcd/part1_distributed_etc_goraft/coreos_cluster_bootstrap.webp)](https://raw.githubusercontent.com/FRosner/outpourings/master/bbolt_etcd/part1_distributed_etc_goraft/coreos_cluster_bootstrap.webp)
 
 Going through the bootstrap sequence shows how each part of the cluster maps to a small branch in that tree:
 
@@ -95,7 +95,7 @@ type node struct {
 
 A node is either a **leaf** (holding a `Value` string with `Children == nil`) or a **directory** (holding a `Children map[string]*node` keyed by path segment). In memory, our CoreOS cluster's keyspace forms a nested tree of Go structs and maps, with `ttlKeyHeap` holding direct pointers to the same ephemeral `*node` structs:
 
-![Inside etcd v0.4: In-Memory store Layout (Go Heap)](./store_memory_layout.png)
+[![Inside etcd v0.4: In-Memory store Layout (Go Heap)](https://raw.githubusercontent.com/FRosner/outpourings/master/bbolt_etcd/part1_distributed_etc_goraft/store_memory_layout.png)](https://raw.githubusercontent.com/FRosner/outpourings/master/bbolt_etcd/part1_distributed_etc_goraft/store_memory_layout.png)
 
 Reading `/services/web/web@1` acquires `worldLock.RLock()`, splits the path, and walks `Root.Children["services"].Children["web"].Children["web@1"]`. Every write acquires the exclusive `worldLock.Lock()` (commented `// stop the world lock` in the source code), increments the store's global monotonic `CurrentIndex`, and updates the affected node's `ModifiedIndex`.
 
@@ -231,7 +231,7 @@ func (s *store) DeleteExpiredKeys(cutoff time.Time) {
 
 The animation below shows this behavior across our three `web` replicas (`ttl=30s`). Healthy renewals keep pushing keys down below the root, while a crashed container eventually moves to the top and expires once its timestamp is reached:
 
-![How ttlKeyHeap Tracks Ephemeral Heartbeats & Expirations](./ttl_key_heap.webp)
+[![How ttlKeyHeap Tracks Ephemeral Heartbeats & Expirations](https://raw.githubusercontent.com/FRosner/outpourings/master/bbolt_etcd/part1_distributed_etc_goraft/ttl_key_heap.webp)](https://raw.githubusercontent.com/FRosner/outpourings/master/bbolt_etcd/part1_distributed_etc_goraft/ttl_key_heap.webp)
 
 Note one important detail in the signature of `DeleteExpiredKeys`: it does not call `time.Now()` itself, and instead takes an explicit `cutoff time.Time` parameter. If three `etcd` nodes expired keys using their own local wall clocks, clock skew would cause them to expire keys at different points relative to incoming writes, leading to diverging trees and different `CurrentIndex` values. We will see in the next section how `etcd` solves this through Raft.
 
@@ -295,7 +295,7 @@ When `confd` reconnects with `?wait=true&recursive=true&waitIndex=44`, [`EventHi
 
 The animation below shows all three cases on a scaled-down 10-slot ring buffer: a live watch waking on `#1`, a quick reconnect replaying `#2` from history, and a burst of writes wrapping around to clear `#3`:
 
-![Long-Polling Watches and the EventHistory Ring Buffer](./event_history_ring_buffer.webp)
+[![Long-Polling Watches and the EventHistory Ring Buffer](https://raw.githubusercontent.com/FRosner/outpourings/master/bbolt_etcd/part1_distributed_etc_goraft/event_history_ring_buffer.webp)](https://raw.githubusercontent.com/FRosner/outpourings/master/bbolt_etcd/part1_distributed_etc_goraft/event_history_ring_buffer.webp)
 
 The source comment right above `newWatchHub` in [`store/watcher_hub.go`](https://github.com/etcd-io/etcd/blob/v0.4.9/store/watcher_hub.go#L26-L35) shows the exact 2013 workload assumption behind that buffer size:
 
@@ -321,7 +321,7 @@ We will not go into Raft's leader-election proofs or term safety here (for an in
 
 Every `etcd` node runs the same deterministic in-memory `store` we just looked at. Rather than replicating raw memory pages or full key-value snapshots on every write, Raft replicates an ordered, append-only log of commands across the three nodes:
 
-![How etcd's Replicated State Machine Handles a PUT Request](./replicated_state_machine.webp)
+[![How etcd's Replicated State Machine Handles a PUT Request](https://raw.githubusercontent.com/FRosner/outpourings/master/bbolt_etcd/part1_distributed_etc_goraft/replicated_state_machine.webp)](https://raw.githubusercontent.com/FRosner/outpourings/master/bbolt_etcd/part1_distributed_etc_goraft/replicated_state_machine.webp)
 
 Following the five steps in the animation shows how `locksmithd`'s CAS request flows through `goraft`:
 
@@ -474,15 +474,15 @@ Even with near-zero local network latency, a single write waits around 25 ms on 
 
 **Unbatched per-entry syscalls on the log.** Under concurrent client load, [`Log.appendEntry()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/log.go#L502-L533) serializes appends one entry at a time under `Log.mutex.Lock()`. Each command triggers a `file.Seek(0, os.SEEK_CUR)` syscall plus two unbuffered `write()` syscalls: `fmt.Fprintf` for the hex length header and `file.Write` for the JSON-wrapped-in-Protobuf entry. Meanwhile, leader commits call `s.log.sync()` and execute state-machine mutations synchronously under the same coarse lock.
 
-To see both bottlenecks in practice, we benchmarked steady-state `/v2/keys` writes across increasing client concurrency (`c = 1` through `256`) on a 3-node `etcd v0.4.9` cluster. The setup is reproducible via [`../benchmarks/part1_v04/run.sh`](../benchmarks/part1_v04/run.sh). Each node runs on 1 dedicated `cpuset`-pinned core with `tmpfs` volumes (to isolate Raft replication and locking from single-host disk contention), and clients send direct-to-leader HTTP `keep-alive` `PUT`s across `1,000` keys with `256 B` values.
+To see both bottlenecks in practice, we benchmarked steady-state `/v2/keys` writes across increasing client concurrency (`c = 1` through `256`) on a 3-node `etcd v0.4.9` cluster. The setup is reproducible via [`bbolt_etcd/benchmarks/part1_v04/run.sh`](https://github.com/FRosner/outpourings/blob/master/bbolt_etcd/benchmarks/part1_v04/run.sh). Each node runs on 1 dedicated `cpuset`-pinned core with `tmpfs` volumes (to isolate Raft replication and locking from single-host disk contention), and clients send direct-to-leader HTTP `keep-alive` `PUT`s across `1,000` keys with `256 B` values.
 
-![etcd v0.4.9 Steady-State Write Throughput](./v04_write_throughput.png)
+[![etcd v0.4.9 Steady-State Write Throughput](https://raw.githubusercontent.com/FRosner/outpourings/master/bbolt_etcd/part1_distributed_etc_goraft/v04_write_throughput.png)](https://raw.githubusercontent.com/FRosner/outpourings/master/bbolt_etcd/part1_distributed_etc_goraft/v04_write_throughput.png)
 
 At `c = 1`, sequential writes align with `goraft`'s `50 ms` `Peer.heartbeat()` interval (`p50 = 49.7 ms`, `p99 = 52.8 ms`), capping throughput at `22.1 writes/s`. Increasing concurrency lets multiple appends accumulate in `/var/lib/etcd/log` during one heartbeat sleep and flush together in the next `AppendEntries` request.
 
 As a result, throughput scales steadily through `87.1 writes/s` (`c = 4`), `317 writes/s` (`c = 16`), `636 writes/s` (`c = 32`), `1,283 writes/s` (`c = 64`), and `2,530 writes/s` (`c = 128`). By `c = 256`, however, the curve drops below the dashed ideal linear line at `4,755 writes/s` (`215×` the `c = 1` rate for `256×` concurrency), as writers saturate the leader's single core behind `Log.mutex` and unbatched per-entry `Seek`/`Write` syscalls.
 
-![etcd v0.4.9 Steady-State Write Latency](./v04_write_latency.png)
+[![etcd v0.4.9 Steady-State Write Latency](https://raw.githubusercontent.com/FRosner/outpourings/master/bbolt_etcd/part1_distributed_etc_goraft/v04_write_latency.png)](https://raw.githubusercontent.com/FRosner/outpourings/master/bbolt_etcd/part1_distributed_etc_goraft/v04_write_latency.png)
 
 Per-request latency confirms both bottlenecks. Across the entire sweep from `c = 1` to `c = 256`, median latency stays flat at the `50 ms` heartbeat interval (`49.4-51.0 ms`). Meanwhile, `p99` tail latency climbs steadily as batches grow, rising from `53 ms` (`c = 1`) through `58 ms` (`c = 32`), `63 ms` (`c = 64`), and `79 ms` (`c = 128`) up to `117 ms` (`c = 256`). At `c = 256`, tail latency exceeds two full heartbeat cycles as writers queue behind serialized log appends and commits.
 
