@@ -16,12 +16,14 @@ from . import (
     coreos_cluster_bootstrap,
     event_history_ring_buffer,
     replicated_state_machine,
+    store_memory_layout,
     ttl_key_heap,
 )
 
-# Register new Part 1 animations here as they are added:
+# Register new Part 1 animations and static diagrams here as they are added:
 ANIMATIONS: Dict[str, object] = {
     coreos_cluster_bootstrap.NAME: coreos_cluster_bootstrap,
+    store_memory_layout.NAME: store_memory_layout,
     ttl_key_heap.NAME: ttl_key_heap,
     event_history_ring_buffer.NAME: event_history_ring_buffer,
     replicated_state_machine.NAME: replicated_state_machine,

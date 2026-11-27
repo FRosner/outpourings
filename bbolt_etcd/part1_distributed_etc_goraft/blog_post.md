@@ -93,17 +93,9 @@ type node struct {
 }
 ```
 
-A node is either a **leaf** (holding a `Value` string with `Children == nil`) or a **directory** (holding a `Children map[string]*node` keyed by path segment). In memory, our CoreOS cluster's keyspace forms a nested tree of Go structs and maps:
+A node is either a **leaf** (holding a `Value` string with `Children == nil`) or a **directory** (holding a `Children map[string]*node` keyed by path segment). In memory, our CoreOS cluster's keyspace forms a nested tree of Go structs and maps, with `ttlKeyHeap` holding direct pointers to the same ephemeral `*node` structs:
 
-```text
-store.Root (dir "/")
-├── "_coreos.com" ──► "fleet" ──► "machines" ──► ...
-├── "config"      ──► "web"   ──► "rate_limit" ("1000")
-├── "coreos.com"  ──► "updateengine" ──► "rebootlock" ──► "semaphore" (idx: 5)
-└── "services"    ──► "web"   ──► "web@1" ("10.0.1.1:8080", ExpireTime: +30s) ◄──┐
-                                                                                 │
-store.ttlKeyHeap.array[0] ───────────────────────────────────────────────────────┘
-```
+![Inside etcd v0.4: In-Memory store Layout (Go Heap)](./store_memory_layout.png)
 
 Reading `/services/web/web@1` acquires `worldLock.RLock()`, splits the path, and walks `Root.Children["services"].Children["web"].Children["web@1"]`. Every write acquires the exclusive `worldLock.Lock()` (commented `// stop the world lock` in the source code), increments the store's global monotonic `CurrentIndex`, and updates the affected node's `ModifiedIndex`.
 
