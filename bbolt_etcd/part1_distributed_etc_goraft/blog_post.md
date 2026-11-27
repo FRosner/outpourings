@@ -1,7 +1,7 @@
 ---
 title: "The Evolution of etcd Storage: A Distributed /etc in RAM (v0.1 - v0.4)"
 published: false
-description: "TBD: How CoreOS's small-config workload shaped etcd's earliest storage engine: an in-memory directory tree, goraft consensus, JSON snapshots, and the limitations that led to etcd v2."
+description: "How CoreOS's small-config workload shaped etcd's earliest storage engine: an in-memory directory tree, goraft consensus, JSON snapshots, and the limitations that led to etcd v2."
 tags: etcd, distributedsystems, databases, storage
 series: The Evolution of etcd Storage
 ---
@@ -425,27 +425,29 @@ In `etcd v0.4.9`, `PeerServer.monitorSnapshot()` ([`server/peer_server.go`](http
 
 Every step of this pipeline is easy to understand, but it scales linearly (`O(N)`) with the total size of the tree in RAM, CPU, and disk I/O.
 
-## Why It Fit 2013 and Where the Cracks Appeared
+## Evaluating the v0.4 Design: Strengths and Limitations
 
 For the 2013 CoreOS Container Linux workload, `etcd v0.1` to `v0.4` was a pragmatic design. It shipped as a single static Go binary with zero external dependencies, gave operators a familiar filesystem model they could inspect with `curl`, served reads in microseconds from RAM, and recovered state from plain files in `/var/lib/etcd/`. When a cluster only coordinated a few dozen keys across `fleet`, `locksmith`, and `confd`, this simplicity allowed CoreOS to ship quickly.
 
-However, as clusters moved from early prototypes into production deployments in 2014, `goraft` (the consensus and persistence engine underneath `store`) started showing serious problems. These fell into two main categories: **architectural issues** and **performance issues**.
+However, as clusters moved from early prototypes into production deployments in 2014, serious limitations emerged. Most of them stemmed from `goraft` (the consensus and persistence engine underneath `store`) and how it interacted with snapshotting. They fell into three areas: **coupling and testability**, **persistence correctness**, and **write-path performance**.
 
-### 1. Architectural Issues: Monolithic Coupling and Persistence Hazards
+### Testability and Coupling in `goraft`
 
 Inside [`third_party/github.com/goraft/raft/`](https://github.com/etcd-io/etcd/tree/v0.4.9/third_party/github.com/goraft/raft), `goraft`'s [`server`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L111-L150) struct combined every layer of the system into a single stateful object:
 
-- **Network transport:** Direct HTTP client/server calls ([`http_transporter.go`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/http_transporter.go)) and per-peer background goroutines.
+- **Network transport:** Direct HTTP client and server calls ([`http_transporter.go`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/http_transporter.go)) and per-peer background goroutines.
 - **Timers and goroutine lifecycles:** Wall-clock `time.Tick` and `time.After` channels driving [`leaderLoop`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L817), [`followerLoop`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L669), and [`candidateLoop`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L731).
-- **Disk I/O:** Direct `os.File` seeks, writes, renames, and `fsync` calls embedded inside [`Log`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/log.go) and [`Snapshot.save()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/snapshot.go#L55-L86).
-- **Synchronous state-machine execution:** [`Log.setCommitIndex()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/log.go#L331-L385) decoded each entry and called `l.ApplyFunc(entry, command)` synchronously while holding `Log.mutex.Lock()`.
+- **Disk I/O:** Direct `os.File` seeks, writes, renames, and `fsync` calls inside [`Log`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/log.go) and [`Snapshot.save()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/snapshot.go#L55-L86).
+- **Synchronous state-machine execution:** [`Log.setCommitIndex()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/log.go#L331-L385) decoded each entry and invoked `l.ApplyFunc(entry, command)` synchronously while holding `Log.mutex.Lock()`.
 
-Consensus protocols are hardest to get right in rare failure scenarios: asymmetric network partitions, dropped or reordered RPCs, sudden leader step-downs, and partial disk writes. Because `goraft` tightly coupled live sockets, wall-clock timers, coarse mutexes, and `os.File` handles into the protocol state machine, deterministic unit testing was almost impossible. Edge cases had to be reproduced through timing-dependent multi-goroutine tests, which made subtle split-brain and cluster-membership bugs hard to isolate and fix.
+Consensus protocols are hardest to get right in rare failure scenarios, such as asymmetric network partitions, dropped or reordered RPCs, sudden leader step-downs, and partial disk writes. Because `goraft` coupled live sockets, wall-clock timers, coarse mutexes, and `os.File` handles directly into the protocol state machine, deterministic unit testing was almost impossible. Edge cases had to be reproduced through timing-dependent multi-goroutine tests, which made subtle split-brain and cluster-membership bugs hard to isolate and fix.
 
-On disk, the persistence format had its own correctness issues:
+### Persistence and Snapshot Correctness
 
-- **Unchecksummed log entries:** While `.ss` snapshot files included a CRC32 checksum, `/var/lib/etcd/log` had no per-entry integrity check. [`LogEntry.Encode()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/log_entry.go#L72-L83) wrote an 8-character ASCII hex length followed by raw protobuf bytes (`fmt.Fprintf(w, "%8x\n", len(b))` and `w.Write(b)`). Silent bitrot or a corrupted sector in the log went undetected during replay as long as the bytes still unmarshaled as valid protobuf.
-- **Racy snapshot boundaries:** [`server.TakeSnapshot()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L1188-L1218) even contained an explicit `TODO` in `etcd v0.4.9`'s production code:
+On disk, the persistence format introduced two notable data-integrity hazards:
+
+- **Unchecksummed log entries:** While `.ss` snapshot files included a CRC32 checksum, `/var/lib/etcd/log` had no per-entry integrity check. In [`LogEntry.Encode()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/log_entry.go#L72-L83), `goraft` wrote an 8-character ASCII hex length (`fmt.Fprintf(w, "%8x\n", len(b))`) followed by raw protobuf bytes (`w.Write(b)`). Silent bitrot or a corrupted sector in the log went undetected during replay as long as the bytes still unmarshaled as valid protobuf.
+- **Racy snapshot boundaries:** [`server.TakeSnapshot()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L1188-L1218) contained an explicit `TODO` in `etcd v0.4.9`'s production code:
 
   ```go
   // third_party/github.com/goraft/raft/server.go (etcd v0.4.9)
@@ -462,31 +464,38 @@ On disk, the persistence format had its own correctness issues:
 
   Because `TakeSnapshot()` read `lastIndex` before calling `s.stateMachine.Save()` without blocking concurrent commits, new mutations could be applied to `store` in the gap. This could produce a snapshot file whose serialized `State` had already moved past its recorded `LastIndex`.
 
-### 2. Performance Issues: Timer-Polled Replication, Unbatched Log I/O, and Compaction Stalls
+### Write-Path Performance and Compaction Stalls
 
-Even on a healthy network without failures, `goraft`'s write and compaction paths had significant performance bottlenecks.
+Even on a healthy network without failures, `goraft`'s write and compaction paths had significant bottlenecks. Two of them governed steady-state writes before log compaction ran.
 
-Let's start with steady-state writes, before log compaction runs. Two bottlenecks limited throughput and latency across different levels of client concurrency:
+**Timer-polled, stop-and-wait replication.** In [`server.processCommand()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L907-L926), the leader appends a client command to `/var/lib/etcd/log` and returns immediately without waking peer replication goroutines. Instead, each follower's [`Peer.heartbeat()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/peer.go#L138-L182) loop waits on a `50 ms` `time.Tick` (`DefaultHeartbeatInterval`) before calling `p.flush()`, where [`sendAppendEntriesRequest()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/peer.go#L189-L250) blocks synchronously until the HTTP request completes.
 
-1. **50 ms timer-polled, stop-and-wait replication:** In [`server.processCommand()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/server.go#L907-L926) on the leader, after a client's command is appended to `/var/lib/etcd/log`, the function returns immediately without signaling any peer replication goroutines. Instead, each follower's [`Peer.heartbeat()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/peer.go#L138-L182) loop waits on a `50 ms` `time.Tick` (`DefaultHeartbeatInterval = 50 * time.Millisecond`) before calling `p.flush()`, and [`sendAppendEntriesRequest()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/peer.go#L189-L250) blocks synchronously until that HTTP request completes. Even with near-zero local network latency, a single request waits around 25 ms on average for the next tick. Back-to-back sequential `PUT`s align with the `50 ms` interval, capping a single writer at roughly 20 writes/sec.
-2. **Unbatched per-entry syscalls on the log:** Under concurrent client load, [`Log.appendEntry()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/log.go#L502-L533) serializes appends one entry at a time under `Log.mutex.Lock()`. Every single command triggers a `file.Seek(0, os.SEEK_CUR)` syscall plus two unbuffered `write()` syscalls (`fmt.Fprintf` for the hex length header and `file.Write` for the JSON-wrapped-in-Protobuf entry). Meanwhile, leader commits call `s.log.sync()` and execute state-machine mutations synchronously under the same coarse lock.
+Even with near-zero local network latency, a single write waits around 25 ms on average for the next tick. Back-to-back sequential `PUT`s align with the `50 ms` interval, capping a single writer at roughly 20 writes/sec.
 
-To see both bottlenecks in practice, we benchmarked steady-state `/v2/keys` writes across increasing client concurrency (`c = 1` through `256`) on a 3-node `etcd v0.4.9` cluster. The setup is reproducible via [`../benchmarks/part1_v04/run.sh`](../benchmarks/part1_v04/run.sh): each node runs on 1 dedicated `cpuset`-pinned core with `tmpfs` volumes (to isolate Raft replication and locking from single-host disk contention), and clients send direct-to-leader HTTP `keep-alive` `PUT`s across `1,000` keys with `256 B` values.
+**Unbatched per-entry syscalls on the log.** Under concurrent client load, [`Log.appendEntry()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/log.go#L502-L533) serializes appends one entry at a time under `Log.mutex.Lock()`. Each command triggers a `file.Seek(0, os.SEEK_CUR)` syscall plus two unbuffered `write()` syscalls: `fmt.Fprintf` for the hex length header and `file.Write` for the JSON-wrapped-in-Protobuf entry. Meanwhile, leader commits call `s.log.sync()` and execute state-machine mutations synchronously under the same coarse lock.
+
+To see both bottlenecks in practice, we benchmarked steady-state `/v2/keys` writes across increasing client concurrency (`c = 1` through `256`) on a 3-node `etcd v0.4.9` cluster. The setup is reproducible via [`../benchmarks/part1_v04/run.sh`](../benchmarks/part1_v04/run.sh). Each node runs on 1 dedicated `cpuset`-pinned core with `tmpfs` volumes (to isolate Raft replication and locking from single-host disk contention), and clients send direct-to-leader HTTP `keep-alive` `PUT`s across `1,000` keys with `256 B` values.
 
 ![etcd v0.4.9 Steady-State Write Throughput](./v04_write_throughput.png)
 
-At `c = 1`, back-to-back sequential writes align with `goraft`'s `50 ms` `Peer.heartbeat()` interval (`p50 = 49.7 ms`, `p99 = 52.8 ms`), capping throughput at `22.1 writes/s`. Increasing concurrency allows multiple client appends to accumulate in `/var/lib/etcd/log` during the same heartbeat sleep and get flushed together in the next `AppendEntries` request. Throughput scales steadily through `87.1 writes/s` (`c = 4`), `317 writes/s` (`c = 16`), `636 writes/s` (`c = 32`), `1,283 writes/s` (`c = 64`), and `2,530 writes/s` (`c = 128`). By `c = 256`, however, the curve drops below the dashed ideal linear line at `4,755 writes/s` (`215×` the `c = 1` rate for `256×` concurrency), as concurrent writers saturate the leader's single core behind `Log.mutex` and unbatched per-entry `Seek`/`Write` syscalls.
+At `c = 1`, sequential writes align with `goraft`'s `50 ms` `Peer.heartbeat()` interval (`p50 = 49.7 ms`, `p99 = 52.8 ms`), capping throughput at `22.1 writes/s`. Increasing concurrency lets multiple appends accumulate in `/var/lib/etcd/log` during one heartbeat sleep and flush together in the next `AppendEntries` request.
+
+As a result, throughput scales steadily through `87.1 writes/s` (`c = 4`), `317 writes/s` (`c = 16`), `636 writes/s` (`c = 32`), `1,283 writes/s` (`c = 64`), and `2,530 writes/s` (`c = 128`). By `c = 256`, however, the curve drops below the dashed ideal linear line at `4,755 writes/s` (`215×` the `c = 1` rate for `256×` concurrency), as writers saturate the leader's single core behind `Log.mutex` and unbatched per-entry `Seek`/`Write` syscalls.
 
 ![etcd v0.4.9 Steady-State Write Latency](./v04_write_latency.png)
 
-Looking at per-request latency confirms both bottlenecks. Across the entire sweep from `c = 1` to `c = 256`, median latency stays flat at the `50 ms` heartbeat interval (`49.4-51.0 ms`). Meanwhile, `p99` tail latency climbs steadily as batches grow, from `53 ms` (`c = 1`) through `58 ms` (`c = 32`), `63 ms` (`c = 64`), and `79 ms` (`c = 128`) up to `117 ms` (`c = 256`), exceeding two full heartbeat cycles as writers queue behind serialized log appends and commits.
+Per-request latency confirms both bottlenecks. Across the entire sweep from `c = 1` to `c = 256`, median latency stays flat at the `50 ms` heartbeat interval (`49.4-51.0 ms`). Meanwhile, `p99` tail latency climbs steadily as batches grow, rising from `53 ms` (`c = 1`) through `58 ms` (`c = 32`), `63 ms` (`c = 64`), and `79 ms` (`c = 128`) up to `117 ms` (`c = 256`). At `c = 256`, tail latency exceeds two full heartbeat cycles as writers queue behind serialized log appends and commits.
 
-These steady-state numbers only hold while `/var/lib/etcd/log` appends uninterrupted. Every `10,000` commits (`snapshot_count`), `goraft` also introduces a third bottleneck into the write path:
+**Stop-the-world snapshot and log-rewrite stalls.** These steady-state numbers only hold while `/var/lib/etcd/log` appends uninterrupted. Every `10,000` commits (`snapshot_count`), `PeerServer.monitorSnapshot()` triggers `TakeSnapshot()`, adding a third bottleneck to the write path.
 
-3. **Stop-the-world snapshot and log-rewrite stalls:** When `PeerServer.monitorSnapshot()` crosses the `10,000`-entry threshold and calls `TakeSnapshot()`, `store.Save()` acquires the exclusive `worldLock` to deep-clone the tree, marshals it to JSON twice (base64-encoding the inner JSON into an outer `.ss` file), and `fsync`s the snapshot. Right afterward, [`Log.compact()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/log.go#L568-L624) acquires the exclusive `Log.mutex.Lock()`, opens `log.new`, re-encodes surviving tail entries to disk, calls `file.Sync()`, and atomically replaces `/var/lib/etcd/log` with `log.new` via `os.Rename`. All in-flight appends and commits stall until this rewrite finishes.
+First, `store.Save()` acquires the exclusive `worldLock` to deep-clone the tree, marshals it to JSON twice (base64-encoding the inner JSON into the outer `.ss` file), and `fsync`s the snapshot. Next, [`Log.compact()`](https://github.com/etcd-io/etcd/blob/v0.4.9/third_party/github.com/goraft/raft/log.go#L568-L624) acquires `Log.mutex.Lock()`, writes the surviving tail entries into `log.new`, calls `file.Sync()`, and atomically replaces `/var/lib/etcd/log` via `os.Rename`. All in-flight appends and commits stall until this rewrite finishes.
 
 ## Looking Ahead to Part 2
 
-By late 2014, the CoreOS team realized that `goraft`'s architectural coupling and write-path bottlenecks could not be solved with incremental patches. Making `etcd` reliable enough for production meant rebuilding its consensus engine, on-disk write-ahead storage, and peer replication from scratch. The goals were deterministic and unit-testable state transitions, corruption checks for every persisted record, and a write path free of timer-polling and unbatched syscall stalls.
+By late 2014, the CoreOS team realized that `goraft`'s coupling, persistence hazards, and write-path bottlenecks could not be solved with incremental patches. Making `etcd` reliable enough for production meant rebuilding its consensus engine, on-disk write-ahead storage, and peer replication from scratch. The goals were deterministic and unit-testable state transitions, corruption checks for every persisted record, and a write path free of timer-polling and unbatched syscall stalls.
 
 This rewrite shipped in January 2015 as `etcd v2.0`. In Part 2, we will examine `etcd v2`'s redesigned consensus and storage architecture, run the same 3-node benchmark to see how much changed, and look at what happened when rapid production adoption brought much larger workloads to `etcd`.
+
+---
+
+If you liked this post, you can [support me on ko-fi](https://ko-fi.com/frosnerd).
